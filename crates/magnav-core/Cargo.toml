@@ -8,6 +8,24 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+ndarray.workspace = true
+ndarray-npy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+rand_xoshiro.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "particle_filter"
+harness = false
 
 [lints]
 workspace = true
