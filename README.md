@@ -19,7 +19,7 @@ test, not a result.
 | Phase | Content | State |
 |---|---|---|
 | 0 | Literature, data and sensor-parameter research ([docs/research-notes.md](docs/research-notes.md)) | done |
-| 1 | Rust workspace, map interpolation, particle filter on a synthetic map, benchmark | in progress |
+| 1 | Rust workspace, map interpolation, particle filter on a synthetic map, benchmark | done |
 | 2 | Real BGS map, sensor models, error-budget sweeps | – |
 | 3 | UK navigability heatmap | – |
 | 4 | Python bindings (PyO3 + maturin), plots | – |
@@ -39,7 +39,25 @@ docs/                research notes and citations
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
+cargo run --release -p magnav-cli -- demo --map gaussian   # filter vs INS on a synthetic map
+cargo run --release -p magnav-cli -- demo --map flat       # same flight, no map information
 ```
+
+## What is validated so far (Phase 1)
+
+Each check has its pass criterion fixed before it was run; see the test files for details.
+
+| Check | Criterion | Result |
+|---|---|---|
+| Bilinear interpolation, linear and bilinear fields | exact to 1e-9 relative | pass |
+| Bilinear interpolation, x^2 | error <= h^2/4, second-order convergence | pass |
+| Filter on a strongly varying synthetic map, 5 seeds | final error < 100 m and < 0.2x INS | 23-52 m vs 1000 m INS |
+| Filter on a flat map, 5 seeds | no resampling; spread = sqrt(s0^2 + q^2 t) +/-5%; tracks INS; final error >= 0.8x INS | 982-1014 m (no convergence, as required) |
+| Serial vs rayon | bit-identical results on 1, 3, 16 threads | pass |
+
+One finding from building these tests: where the map is locally flat, the filter correctly
+falls back to INS dead reckoning and its error grows at the INS drift rate. That is the
+mechanism behind the "where in the UK does MagNav work" question.
 
 ## Particle filter benchmark
 
