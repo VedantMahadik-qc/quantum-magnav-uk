@@ -8,7 +8,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Vedant"]
-repository = "https://github.com/your-username/quantum-magnav-uk"
+repository = "https://github.com/VedantMahadik-qc/quantum-magnav-uk"
 
 # One place to pin versions; crates opt in with `foo.workspace = true`.
 [workspace.dependencies]
