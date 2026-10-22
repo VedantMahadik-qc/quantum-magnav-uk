@@ -1,0 +1,7 @@
+/target
+# Raw/derived map data is downloaded by script, never committed (licence still being confirmed).
+/data
+*.npy
+*.csv
+__pycache__/
+.venv/

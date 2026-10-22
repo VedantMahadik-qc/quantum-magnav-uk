@@ -1,0 +1,15 @@
+[package]
+name = "magnav-py"
+description = "Python bindings for magnav-core (placeholder; PyO3 + maturin arrive in Phase 4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+magnav-core.workspace = true
+
+[lints]
+workspace = true

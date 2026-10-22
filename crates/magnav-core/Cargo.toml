@@ -1,0 +1,13 @@
+[package]
+name = "magnav-core"
+description = "Magnetic anomaly navigation core: maps, simulation and a parallel particle filter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
