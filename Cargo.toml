@@ -37,3 +37,8 @@ all = { level = "warn", priority = -1 }
 
 [profile.bench]
 debug = true
+
+# The sanity tests run thousands of particles for hundreds of steps; unoptimised builds make
+# them needlessly slow, so tests are compiled with optimisations.
+[profile.test]
+opt-level = 3

@@ -8,11 +8,15 @@
 //! - Time is in **seconds**, velocities in **m/s**.
 //! - Magnetic field values are total-field anomalies in **nanotesla (nT)**.
 
+pub mod filter;
 pub mod map;
 pub mod sensor;
+pub mod sim;
 pub mod synthetic;
 pub mod trajectory;
 pub mod vec2;
 
+pub use filter::{FilterConfig, FilterError, ParticleFilter, StepSummary};
 pub use map::{Bounds, FieldMap, MapError, MapGrid, MapMetadata};
+pub use sim::{Scenario, SimError, StepRecord, run_scenario};
 pub use vec2::Vec2;
