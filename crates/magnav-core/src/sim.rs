@@ -85,7 +85,7 @@ pub fn run_scenario<M, S>(
     sensor_seed: u64,
 ) -> Result<Vec<StepRecord>, SimError>
 where
-    M: FieldMap,
+    M: FieldMap + Sync,
     S: Magnetometer,
 {
     let mut sensor_rng = Xoshiro256PlusPlus::seed_from_u64(sensor_seed);

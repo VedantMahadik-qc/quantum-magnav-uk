@@ -18,10 +18,14 @@
 //! Particle `i` at step `k` draws its random numbers from its own generator seeded by
 //! `(seed, k, i)`. Results therefore do not depend on the order particles are processed in,
 //! which is what lets the parallel mode give bit-identical answers to the serial one.
+//! Only the per-particle work runs in parallel. Sums over particles (normalisation, mean,
+//! spread) stay serial, because floating-point addition in a different order gives slightly
+//! different answers.
 
 use rand::{RngExt, SeedableRng};
 use rand_distr::StandardNormal;
 use rand_xoshiro::Xoshiro256PlusPlus;
+use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::map::FieldMap;
@@ -43,6 +47,19 @@ pub struct FilterConfig {
     pub resample_fraction: f64,
     /// Seed for all of the filter's randomness.
     pub seed: u64,
+    /// Run the per-particle work on one thread or across rayon's thread pool. Both give
+    /// bit-identical results.
+    pub mode: ExecMode,
+}
+
+/// How the per-particle predict/update work is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecMode {
+    /// One thread.
+    Serial,
+    /// Rayon's global thread pool (one worker per CPU core by default).
+    #[default]
+    Parallel,
 }
 
 /// Errors the filter can hit while running.
@@ -135,7 +152,11 @@ impl ParticleFilter {
     ///
     /// `map` is borrowed (`&M`): the filter reads it but never owns or changes it.
     /// `&mut self` means this method has exclusive access to the filter while it runs.
-    pub fn step<M: FieldMap>(
+    ///
+    /// `M: FieldMap + Sync`: `Sync` means a shared `&M` may be used from several threads at
+    /// once, which the parallel mode does. Plain-data types like `MapGrid` are `Sync`
+    /// automatically. The compiler would reject a map type that isn't thread-safe.
+    pub fn step<M: FieldMap + Sync>(
         &mut self,
         map: &M,
         ins_velocity: Vec2,
@@ -149,21 +170,37 @@ impl ParticleFilter {
         let inv_two_r2 = 1.0 / (2.0 * self.config.measurement_sigma_nt.powi(2));
         let displacement = ins_velocity * dt;
 
-        // Predict + update, one particle at a time. Each particle only touches its own
-        // position, weight and random stream.
-        for (i, ((pos, &w), log_w)) in self
-            .positions
-            .iter_mut()
-            .zip(&self.weights)
-            .zip(&mut self.log_weights)
-            .enumerate()
-        {
-            let mut rng = particle_rng(seed, step, i as u64);
-            *pos += displacement + gaussian_vec2(&mut rng) * jitter_sigma;
-            *log_w = match map.field_at(pos.x, pos.y) {
-                Some(predicted) => w.ln() - (measurement_nt - predicted).powi(2) * inv_two_r2,
-                None => f64::NEG_INFINITY, // off the map: impossible
+        // Predict + update for one particle. It only touches that particle's position, weight
+        // and random stream, so particles can be processed in any order, or in parallel,
+        // and give identical results.
+        let predict_and_weigh =
+            |(i, ((pos, &w), log_w)): (usize, ((&mut Vec2, &f64), &mut f64))| {
+                let mut rng = particle_rng(seed, step, i as u64);
+                *pos += displacement + gaussian_vec2(&mut rng) * jitter_sigma;
+                *log_w = match map.field_at(pos.x, pos.y) {
+                    Some(predicted) => w.ln() - (measurement_nt - predicted).powi(2) * inv_two_r2,
+                    None => f64::NEG_INFINITY, // off the map: impossible
+                };
             };
+
+        // The same closure drives a serial iterator or a rayon parallel iterator. Rayon
+        // splits the zipped slices into chunks and hands them to worker threads. The borrow
+        // checker has already proved no two threads can touch the same element.
+        match self.config.mode {
+            ExecMode::Serial => self
+                .positions
+                .iter_mut()
+                .zip(&self.weights)
+                .zip(&mut self.log_weights)
+                .enumerate()
+                .for_each(predict_and_weigh),
+            ExecMode::Parallel => self
+                .positions
+                .par_iter_mut()
+                .zip(&self.weights)
+                .zip(&mut self.log_weights)
+                .enumerate()
+                .for_each(predict_and_weigh),
         }
 
         // Normalise: w_i = exp(lw_i - max) / sum. Subtracting the max keeps the largest
@@ -280,6 +317,7 @@ mod tests {
             measurement_sigma_nt: 2.0,
             resample_fraction: 0.5,
             seed: 1,
+            mode: ExecMode::Serial,
         }
     }
 

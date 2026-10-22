@@ -9,7 +9,9 @@
 use magnav_core::sensor::IdealSensor;
 use magnav_core::synthetic::{FlatField, GaussianSumField, RandomFieldParams};
 use magnav_core::trajectory::{ConstantBiasIns, StraightLine};
-use magnav_core::{Bounds, FieldMap, FilterConfig, Scenario, StepRecord, Vec2, run_scenario};
+use magnav_core::{
+    Bounds, ExecMode, FieldMap, FilterConfig, Scenario, StepRecord, Vec2, run_scenario,
+};
 
 const SEEDS: [u64; 5] = [1, 2, 3, 4, 5];
 const N_PARTICLES: usize = 5_000;
@@ -51,6 +53,7 @@ fn config(seed: u64) -> FilterConfig {
         measurement_sigma_nt: 2.0,
         resample_fraction: 0.5,
         seed,
+        mode: ExecMode::Parallel,
     }
 }
 
@@ -66,7 +69,7 @@ fn gaussian_map(seed: u64) -> GaussianSumField {
     GaussianSumField::random(&params, seed)
 }
 
-fn run<M: FieldMap>(map: &M, seed: u64) -> Vec<StepRecord> {
+fn run<M: FieldMap + Sync>(map: &M, seed: u64) -> Vec<StepRecord> {
     run_scenario(map, &IdealSensor, &scenario(), &config(seed), seed).unwrap()
 }
 
@@ -178,5 +181,29 @@ fn does_not_converge_on_a_flat_map() {
             last.ins_error_m()
         );
         assert!(last.filter_error_m() >= 0.8 * last.ins_error_m());
+    }
+}
+
+#[test]
+fn serial_and_parallel_are_bit_identical() {
+    // Pass: identical step records (exact `==` on every f64) for serial and for rayon
+    // pools of 1, 3 and 16 threads.
+    let seed = 7;
+    let grid = gaussian_map(seed).to_grid(100.0).unwrap();
+    let with_mode = |mode| {
+        let cfg = FilterConfig {
+            mode,
+            ..config(seed)
+        };
+        run_scenario(&grid, &IdealSensor, &scenario(), &cfg, seed).unwrap()
+    };
+    let serial = with_mode(ExecMode::Serial);
+    for threads in [1, 3, 16] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let parallel = pool.install(|| with_mode(ExecMode::Parallel));
+        assert_eq!(serial, parallel, "differs with {threads} threads");
     }
 }

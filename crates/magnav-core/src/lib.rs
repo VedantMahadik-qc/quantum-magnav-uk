@@ -16,7 +16,7 @@ pub mod synthetic;
 pub mod trajectory;
 pub mod vec2;
 
-pub use filter::{FilterConfig, FilterError, ParticleFilter, StepSummary};
+pub use filter::{ExecMode, FilterConfig, FilterError, ParticleFilter, StepSummary};
 pub use map::{Bounds, FieldMap, MapError, MapGrid, MapMetadata};
 pub use sim::{Scenario, SimError, StepRecord, run_scenario};
 pub use vec2::Vec2;
