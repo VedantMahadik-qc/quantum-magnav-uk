@@ -10,4 +10,4 @@
 
 pub mod map;
 
-pub use map::{FieldMap, MapError, MapGrid};
+pub use map::{FieldMap, MapError, MapGrid, MapMetadata};

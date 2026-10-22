@@ -8,8 +8,23 @@
 //! - `(x0, y0)` is the position of the node `values[[0, 0]]`, i.e. the south-west corner node.
 //!   Node `(row, col)` sits at `(x0 + col * dx, y0 + row * dy)`.
 //! - `NaN` values mean "no data" (e.g. offshore gaps in a real survey).
+//!
+//! ## File format
+//! A map on disk is two files with the same stem: `foo.npy` (a 2-D float64 numpy array in the
+//! orientation above) and a sidecar `foo.json`:
+//!
+//! ```json
+//! { "x0": 400000.0, "y0": 300000.0, "dx": 1000.0, "dy": 1000.0,
+//!   "crs": "EPSG:27700", "units": "nT", "altitude_m": 305.0, "source": "BGS aeromag" }
+//! ```
+//!
+//! `altitude_m` and `source` are optional. `units` must be `"nT"`.
+
+use std::path::{Path, PathBuf};
 
 use ndarray::Array2;
+use ndarray_npy::{ReadNpyError, WriteNpyError, read_npy, write_npy};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Anything that can report a magnetic anomaly value at a position.
@@ -48,6 +63,67 @@ pub enum MapError {
         /// Origin y (m).
         y0: f64,
     },
+    /// Reading or writing a file failed.
+    #[error("I/O error on {path}: {source}")]
+    Io {
+        /// File that failed.
+        path: PathBuf,
+        /// Underlying OS error.
+        source: std::io::Error,
+    },
+    /// The `.npy` file could not be read as a 2-D float64 array.
+    #[error("cannot read {path} as a 2-D float64 .npy array: {source}")]
+    ReadNpy {
+        /// File that failed.
+        path: PathBuf,
+        /// Underlying parse error.
+        source: ReadNpyError,
+    },
+    /// The `.npy` file could not be written.
+    #[error("cannot write {path}: {source}")]
+    WriteNpy {
+        /// File that failed.
+        path: PathBuf,
+        /// Underlying error.
+        source: WriteNpyError,
+    },
+    /// The JSON sidecar is malformed or missing fields.
+    #[error("invalid map metadata in {path}: {source}")]
+    Json {
+        /// File that failed.
+        path: PathBuf,
+        /// Underlying parse error.
+        source: serde_json::Error,
+    },
+    /// Only nanotesla maps are supported, to avoid silent unit mix-ups.
+    #[error("map units must be \"nT\", got {0:?}")]
+    WrongUnits(String),
+}
+
+/// Descriptive metadata stored alongside a map (everything except the grid geometry).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapMetadata {
+    /// Coordinate reference system, e.g. `"EPSG:27700"` (British National Grid).
+    pub crs: String,
+    /// Units of the stored values. Must be `"nT"`.
+    pub units: String,
+    /// Height of the map surface above ground or datum (m), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude_m: Option<f64>,
+    /// Free-text provenance, e.g. the survey name and processing steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// The JSON sidecar: grid geometry plus the descriptive metadata, flattened into one object.
+#[derive(Serialize, Deserialize)]
+struct Sidecar {
+    x0: f64,
+    y0: f64,
+    dx: f64,
+    dy: f64,
+    #[serde(flatten)]
+    metadata: MapMetadata,
 }
 
 /// A regular grid of magnetic anomaly values (nT) with bilinear interpolation.
@@ -186,6 +262,57 @@ impl MapGrid {
             + tx * ty * f11;
         // NaN in any corner propagates into `value`; report that as "no data".
         if value.is_nan() { None } else { Some(value) }
+    }
+
+    /// Loads `foo.npy` and its sidecar `foo.json` (see the module docs for the format).
+    pub fn load(npy_path: impl AsRef<Path>) -> Result<(Self, MapMetadata), MapError> {
+        let npy_path = npy_path.as_ref();
+        let json_path = npy_path.with_extension("json");
+
+        // `?` returns early with the error if a step fails. `map_err` first wraps the
+        // library's error in our own variant so the message says which file was involved.
+        let json = std::fs::read_to_string(&json_path).map_err(|source| MapError::Io {
+            path: json_path.clone(),
+            source,
+        })?;
+        let sidecar: Sidecar = serde_json::from_str(&json).map_err(|source| MapError::Json {
+            path: json_path.clone(),
+            source,
+        })?;
+        if sidecar.metadata.units != "nT" {
+            return Err(MapError::WrongUnits(sidecar.metadata.units));
+        }
+
+        let values: Array2<f64> = read_npy(npy_path).map_err(|source| MapError::ReadNpy {
+            path: npy_path.to_path_buf(),
+            source,
+        })?;
+        let grid = Self::new(sidecar.x0, sidecar.y0, sidecar.dx, sidecar.dy, values)?;
+        Ok((grid, sidecar.metadata))
+    }
+
+    /// Writes the grid to `foo.npy` plus the sidecar `foo.json`.
+    pub fn save(&self, npy_path: impl AsRef<Path>, metadata: &MapMetadata) -> Result<(), MapError> {
+        let npy_path = npy_path.as_ref();
+        let json_path = npy_path.with_extension("json");
+
+        write_npy(npy_path, &self.values).map_err(|source| MapError::WriteNpy {
+            path: npy_path.to_path_buf(),
+            source,
+        })?;
+        let sidecar = Sidecar {
+            x0: self.x0,
+            y0: self.y0,
+            dx: self.dx,
+            dy: self.dy,
+            metadata: metadata.clone(),
+        };
+        // Serialising plain numbers and strings cannot fail, so `expect` documents that.
+        let json = serde_json::to_string_pretty(&sidecar).expect("sidecar is always valid JSON");
+        std::fs::write(&json_path, json).map_err(|source| MapError::Io {
+            path: json_path,
+            source,
+        })
     }
 }
 
@@ -364,5 +491,76 @@ mod tests {
             MapGrid::new(0.0, 0.0, 1.0, 1.0, Array2::zeros((1, 5))),
             Err(MapError::TooSmall { nx: 5, ny: 1 })
         ));
+    }
+
+    fn bng_metadata() -> MapMetadata {
+        MapMetadata {
+            crs: "EPSG:27700".into(),
+            units: "nT".into(),
+            altitude_m: Some(305.0),
+            source: Some("unit test".into()),
+        }
+    }
+
+    #[test]
+    fn save_then_load_round_trips_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("map.npy");
+        let grid = grid_of(|x, y| (x * 0.003).sin() * 100.0 + y * 0.01);
+        grid.save(&path, &bng_metadata()).unwrap();
+
+        let (loaded, metadata) = MapGrid::load(&path).unwrap();
+        assert_eq!(loaded, grid); // values and geometry, bit for bit
+        assert_eq!(metadata, bng_metadata());
+    }
+
+    #[test]
+    fn optional_metadata_fields_may_be_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("map.npy");
+        write_npy(&path, &Array2::<f64>::zeros((3, 4))).unwrap();
+        let json = r#"{"x0": 0, "y0": 0, "dx": 10, "dy": 10, "crs": "EPSG:27700", "units": "nT"}"#;
+        std::fs::write(dir.path().join("map.json"), json).unwrap();
+
+        let (grid, metadata) = MapGrid::load(&path).unwrap();
+        assert_eq!((grid.nx(), grid.ny()), (4, 3));
+        assert_eq!(metadata.altitude_m, None);
+    }
+
+    #[test]
+    fn load_reports_bad_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("map.npy");
+        let json_path = dir.path().join("map.json");
+
+        // Missing sidecar.
+        write_npy(&path, &Array2::<f64>::zeros((3, 3))).unwrap();
+        assert!(matches!(MapGrid::load(&path), Err(MapError::Io { .. })));
+
+        // Negative spacing.
+        let json = r#"{"x0": 0, "y0": 0, "dx": -10, "dy": 10, "crs": "EPSG:27700", "units": "nT"}"#;
+        std::fs::write(&json_path, json).unwrap();
+        assert!(matches!(
+            MapGrid::load(&path),
+            Err(MapError::InvalidSpacing { .. })
+        ));
+
+        // Wrong units.
+        let json = r#"{"x0": 0, "y0": 0, "dx": 10, "dy": 10, "crs": "EPSG:27700", "units": "T"}"#;
+        std::fs::write(&json_path, json).unwrap();
+        assert!(matches!(MapGrid::load(&path), Err(MapError::WrongUnits(u)) if u == "T"));
+
+        // A 1-D array is not a map.
+        let json = r#"{"x0": 0, "y0": 0, "dx": 10, "dy": 10, "crs": "EPSG:27700", "units": "nT"}"#;
+        std::fs::write(&json_path, json).unwrap();
+        write_npy(&path, &ndarray::Array1::<f64>::zeros(5)).unwrap();
+        assert!(matches!(
+            MapGrid::load(&path),
+            Err(MapError::ReadNpy { .. })
+        ));
+
+        // Missing required field.
+        std::fs::write(&json_path, r#"{"x0": 0, "y0": 0, "dx": 10}"#).unwrap();
+        assert!(matches!(MapGrid::load(&path), Err(MapError::Json { .. })));
     }
 }
