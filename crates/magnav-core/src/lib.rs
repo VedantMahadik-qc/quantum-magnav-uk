@@ -9,5 +9,10 @@
 //! - Magnetic field values are total-field anomalies in **nanotesla (nT)**.
 
 pub mod map;
+pub mod sensor;
+pub mod synthetic;
+pub mod trajectory;
+pub mod vec2;
 
-pub use map::{FieldMap, MapError, MapGrid, MapMetadata};
+pub use map::{Bounds, FieldMap, MapError, MapGrid, MapMetadata};
+pub use vec2::Vec2;

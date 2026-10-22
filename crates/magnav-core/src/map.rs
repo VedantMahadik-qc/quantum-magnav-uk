@@ -36,6 +36,26 @@ pub trait FieldMap {
     fn field_at(&self, x: f64, y: f64) -> Option<f64>;
 }
 
+/// An axis-aligned rectangle (m), edges included.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    /// West edge.
+    pub x_min: f64,
+    /// East edge.
+    pub x_max: f64,
+    /// South edge.
+    pub y_min: f64,
+    /// North edge.
+    pub y_max: f64,
+}
+
+impl Bounds {
+    /// True if `(x, y)` lies inside or on the edge. False for NaN.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        (self.x_min..=self.x_max).contains(&x) && (self.y_min..=self.y_max).contains(&y)
+    }
+}
+
 /// Errors from building or loading a [`MapGrid`].
 #[derive(Debug, Error)]
 pub enum MapError {
@@ -226,6 +246,16 @@ impl MapGrid {
     /// y position of the northern edge (last row of nodes).
     pub fn y_max(&self) -> f64 {
         self.y0 + (self.ny() - 1) as f64 * self.dy
+    }
+
+    /// The rectangle spanned by the grid nodes.
+    pub fn bounds(&self) -> Bounds {
+        Bounds {
+            x_min: self.x0,
+            x_max: self.x_max(),
+            y_min: self.y0,
+            y_max: self.y_max(),
+        }
     }
 
     /// Bilinear interpolation at `(x, y)`.
