@@ -23,7 +23,8 @@ test, not a result.
 | 2a | Real BGS map: download, grid, hold-out validation, first real-map flights | done |
 | 2e | Filter estimates the INS velocity bias (marginalised particle filter), NEES consistency metric | done |
 | 2e+ | Realistic INS: Schuler-loop errors from HG4930 datasheet values; filter tuned for it | done |
-| 2b–d, f | Upward continuation, sensor/calibration models, separate truth/filter maps, error-budget sweeps | – |
+| 2b | Field at constant altitude via equivalent sources; Mull box done, national grids pending | partial |
+| 2c, d, f | Sensor/calibration models, separate truth/filter maps, error-budget sweeps | – |
 | 3 | UK navigability heatmap | – |
 | 4 | Python bindings (PyO3 + maturin), plots | – |
 
@@ -33,7 +34,7 @@ test, not a result.
 crates/magnav-core   library: maps, simulation, particle filter
 crates/magnav-cli    `magnav` command-line driver
 crates/magnav-py     placeholder for Python bindings (Phase 4)
-scripts/             data pipeline (Python, run with uv): fetch, report, grid, validate
+scripts/             data pipeline (Python, run with uv): fetch, report, grid, validate, upward-continue
 docs/                research notes, data report, map validation
 ```
 
@@ -57,6 +58,7 @@ uv run scripts/fetch_bgs_aeromag.py    # 541,508 points -> data/raw/ (~2 min)
 uv run scripts/bgs_data_report.py      # docs/data-report.md
 uv run scripts/grid_bgs.py             # 250 m grid -> data/grid/bgs_250m.npy (+ .json)
 uv run scripts/holdout_bgs.py          # docs/map-validation.md (~2 min)
+uv run scripts/upward_bgs.py           # Mull box at 1, 2, 4 km above sea level (~1 min)
 cargo test -p magnav-core --test bgs_grid -- --ignored   # Rust reads the grid correctly
 cargo run --release -p magnav-cli -- demo --map-file data/grid/bgs_250m.npy --start-x 144000 --start-y 730000
 ```
@@ -134,6 +136,29 @@ Both passed; Dorset seed 3 only just, at 2.98×.)
 cargo run --release -p magnav-cli -- demo --map-file data/grid/bgs_250m.npy \
     --start-x 144000 --start-y 730000 --ins hg4930 --sensor-noise-nt 2
 ```
+
+## Altitude (Phase 2b)
+
+The mixed-height survey is levelled and continued upward with equivalent sources
+([docs/upward-continuation.md](docs/upward-continuation.md)); so far only the Mull box is done. Over Mull, a realistic HG4930 INS
+(median of 3 seeds, 60 km flight):
+
+| Flying at | MagNav final error |
+|---|---|
+| 305 m above ground (draped) | 5.8 m |
+| 1000 m above sea level | 16.5 m |
+| 2000 m above sea level | 74 m |
+| 4000 m above sea level | 310 m |
+
+The prediction that error grows with altitude at every step held. Altitude costs about 50×
+here, which matches the sharp drop in field gradient: 87 → 16 nT/km from 1 to 4 km.
+
+The method check failed in an informative way. Equivalent sources recover a known synthetic
+field to 2–3% when it is smooth or sampled without gaps. Sampled like the real survey, the
+error at 1000 m is 13%: the 2 km line spacing never measured the short wavelengths between
+lines. That is a hard limit of the 1960s data at low altitude, not of the processing.
+At survey level, equivalent sources still predict held-out lines better than the cubic grid
+(119 against 145 nT RMS).
 
 ## Data findings
 
