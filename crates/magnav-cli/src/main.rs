@@ -59,6 +59,13 @@ struct DemoArgs {
     /// Magnetometer white noise, standard deviation per sample (nT). 0 = ideal sensor.
     #[arg(long, default_value_t = 0.0)]
     sensor_noise_nt: f64,
+    /// Prior standard deviation of the INS velocity bias the filter estimates (m/s per axis).
+    /// 0 turns bias estimation off (position-only filter).
+    #[arg(long, default_value_t = 2.0)]
+    bias_prior: f64,
+    /// Random walk of the filter's bias model (m/s per √s).
+    #[arg(long, default_value_t = 0.01)]
+    bias_noise: f64,
     /// Run the filter single-threaded instead of with rayon.
     #[arg(long)]
     serial: bool,
@@ -178,6 +185,8 @@ fn run<M: FieldMap + Sync, S: Magnetometer>(
         n_particles: args.particles,
         initial_sigma_m: 1_000.0,
         process_noise_m_per_sqrt_s: 5.0,
+        initial_bias_sigma_m_per_s: args.bias_prior,
+        bias_noise_m_per_s_per_sqrt_s: args.bias_noise,
         // The likelihood must be at least as wide as the sensor noise.
         measurement_sigma_nt: 2.0_f64.max(args.sensor_noise_nt),
         resample_fraction: 0.5,
@@ -195,12 +204,12 @@ fn write_csv(path: &Path, records: &[StepRecord]) -> Result<()> {
     let mut w = BufWriter::new(File::create(path)?);
     writeln!(
         w,
-        "t_s,truth_x_m,truth_y_m,ins_x_m,ins_y_m,est_x_m,est_y_m,filter_error_m,ins_error_m,spread_m,ess,resampled"
+        "t_s,truth_x_m,truth_y_m,ins_x_m,ins_y_m,est_x_m,est_y_m,filter_error_m,ins_error_m,spread_m,nees,bias_x_m_per_s,bias_y_m_per_s,ess,resampled"
     )?;
     for r in records {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             r.t,
             r.truth.x,
             r.truth.y,
@@ -211,6 +220,9 @@ fn write_csv(path: &Path, records: &[StepRecord]) -> Result<()> {
             r.filter_error_m(),
             r.ins_error_m(),
             r.spread_m,
+            r.nees(),
+            r.bias_estimate.x,
+            r.bias_estimate.y,
             r.ess,
             r.resampled
         )?;
@@ -232,5 +244,11 @@ fn print_summary(records: &[StepRecord]) {
     println!(
         "  filter spread       {:8.1} m (1-sigma per axis)",
         last.spread_m
+    );
+    let tail_nees = tail.iter().map(StepRecord::nees).sum::<f64>() / tail.len() as f64;
+    println!("  NEES, last 60 s     {tail_nees:8.2}   (about 2 if the spread is honest)");
+    println!(
+        "  bias estimate       ({:+.3}, {:+.3}) m/s",
+        last.bias_estimate.x, last.bias_estimate.y
     );
 }
