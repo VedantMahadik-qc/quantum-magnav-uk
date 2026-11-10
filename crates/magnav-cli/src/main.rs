@@ -3,6 +3,7 @@
 //! ```text
 //! magnav demo --map gaussian --particles 5000 --seed 1 --out run.csv
 //! magnav demo --map flat
+//! magnav demo --map-file data/grid/bgs_250m.npy --start-x 200000 --start-y 750000
 //! ```
 //!
 //! Error handling: the library returns typed errors (`thiserror` enums) so callers can match
@@ -19,7 +20,7 @@ use magnav_core::sensor::{IdealSensor, Magnetometer, WhiteNoiseSensor};
 use magnav_core::synthetic::{FlatField, GaussianSumField, RandomFieldParams};
 use magnav_core::trajectory::{ConstantBiasIns, StraightLine};
 use magnav_core::{
-    Bounds, ExecMode, FieldMap, FilterConfig, Scenario, StepRecord, Vec2, run_scenario,
+    Bounds, ExecMode, FieldMap, FilterConfig, MapGrid, Scenario, StepRecord, Vec2, run_scenario,
 };
 
 #[derive(Parser)]
@@ -31,15 +32,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fly a straight 60 km line over a synthetic map and compare the filter with the INS.
+    /// Fly a straight 60 km line east and compare the filter with the INS.
     Demo(DemoArgs),
 }
 
 #[derive(clap::Args)]
 struct DemoArgs {
-    /// Synthetic map type.
+    /// Synthetic map type (ignored when --map-file is given).
     #[arg(long, value_enum, default_value_t = MapKind::Gaussian)]
     map: MapKind,
+    /// Fly over a real gridded map (`.npy` + `.json` sidecar) instead of a synthetic one.
+    #[arg(long, conflicts_with = "map", requires_all = ["start_x", "start_y"])]
+    map_file: Option<PathBuf>,
+    /// Start easting of the true trajectory (m, map coordinates). Default: 20000.
+    #[arg(long)]
+    start_x: Option<f64>,
+    /// Start northing of the true trajectory (m, map coordinates). Default: 50000.
+    #[arg(long)]
+    start_y: Option<f64>,
     /// Number of particles.
     #[arg(long, default_value_t = 5_000)]
     particles: usize,
@@ -81,6 +91,23 @@ fn main() -> Result<()> {
 }
 
 fn demo(args: &DemoArgs) -> Result<()> {
+    if let Some(path) = &args.map_file {
+        let (grid, meta) =
+            MapGrid::load(path).with_context(|| format!("loading map {}", path.display()))?;
+        println!(
+            "map: {} ({} x {} nodes, {} m spacing)",
+            meta.source.as_deref().unwrap_or("no source given"),
+            grid.nx(),
+            grid.ny(),
+            grid.dx()
+        );
+        // The same map generates the measurements and drives the filter, so map error is
+        // zero here: a best case. Separate truth and filter maps come in Phase 2.
+        println!("note: truth and filter share one map (no map error modelled)");
+        let records = simulate(&grid, args)?;
+        return finish(args, &records);
+    }
+
     let records = match args.map {
         MapKind::Gaussian => {
             let params = RandomFieldParams {
@@ -100,12 +127,16 @@ fn demo(args: &DemoArgs) -> Result<()> {
             simulate(&flat, args)?
         }
     };
+    finish(args, &records)
+}
 
+/// Writes the optional CSV and prints the summary.
+fn finish(args: &DemoArgs, records: &[StepRecord]) -> Result<()> {
     if let Some(path) = &args.out {
-        write_csv(path, &records).with_context(|| format!("writing {}", path.display()))?;
+        write_csv(path, records).with_context(|| format!("writing {}", path.display()))?;
         println!("wrote {} steps to {}", records.len(), path.display());
     }
-    print_summary(&records);
+    print_summary(records);
     Ok(())
 }
 
@@ -128,7 +159,10 @@ fn run<M: FieldMap + Sync, S: Magnetometer>(
     args: &DemoArgs,
 ) -> Result<Vec<StepRecord>> {
     let truth = StraightLine {
-        start: Vec2::new(20_000.0, 50_000.0),
+        start: Vec2::new(
+            args.start_x.unwrap_or(20_000.0),
+            args.start_y.unwrap_or(50_000.0),
+        ),
         velocity: Vec2::new(100.0, 0.0),
     };
     let scenario = Scenario {
