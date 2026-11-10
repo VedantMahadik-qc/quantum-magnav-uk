@@ -138,9 +138,13 @@ threads), Windows 11, rustc 1.98.1, with criterion medians:
 
 | Particles | Serial | Rayon (16 threads) | Speed-up |
 |---:|---:|---:|---:|
-| 1 000 | 45 µs (22 M particles/s) | 38 µs (26 M/s) | 1.2× |
-| 10 000 | 455 µs (22 M/s) | 231 µs (43 M/s) | 2.0× |
-| 100 000 | 4.72 ms (21 M/s) | 1.29 ms (78 M/s) | 3.7× |
+| 1 000 | 46 µs (22 M particles/s) | 35 µs (29 M/s) | 1.3× |
+| 10 000 | 467 µs (21 M/s) | 187 µs (54 M/s) | 2.5× |
+| 100 000 | 4.61 ms (22 M/s) | 1.11 ms (90 M/s) | 4.1× |
+
+Re-measured 2026-11-10, after adding bias estimation. The per-particle bias update runs either
+way, so the numbers hold with it on or off. Serial times matched the earlier run to within
+3%. The rayon times vary by about 15% between sessions on this laptop.
 
 The speed-up stops well short of 8× because only the per-particle predict/weigh step runs
 in parallel (Amdahl's law). Normalisation, the weighted sums and resampling stay serial so
