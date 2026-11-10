@@ -47,6 +47,8 @@ arithmetic from the cited figures; everything else is quoted from the linked sou
 - Clearance heights, counted via the API (`mtc=` filter): 305 m: 430,892 pts; 152 m: 68,722
   (survey HG57, ~49.96–50.61°N, i.e. SW England); 457 m: 8,233 (mostly HG56). About 33,661 points
   have other values that I haven't enumerated yet. Phase 2 will check this, including the Highlands.
+  **Resolved 2026-11-10:** they are the constant-altitude surveys CA55_SOUTH and CA57 (549 m AOD) and
+  HG56 (457 m AOD). The Highlands are all draped at 305 m. See [data-report.md](data-report.md).
 - Coverage bbox (API extent): −9 to 3°E, 49.5 to 61°N.
 - Anomaly range in a 13.5k-point sample: −986 to +1524 nT.
 - **Gridded version:** BGS shows a 1 km × 1 km grid ("variable tension technique, and smoothed")
@@ -59,12 +61,15 @@ arithmetic from the cited figures; everything else is quoted from the linked sou
   **OGL v3** with attribution "Contains NERC materials ©NERC [year]"
   ([notebook](https://www.fatiando.org/harmonica/v0.2.0/_downloads/d637f9133e6357827833b3a71e40928b/britain_magnetic.ipynb)).
   Action: email BGS enquiries to confirm, and don't commit raw data to the repo in the meantime
-  (download script only).
+  (download script only). **Emailed enquiries@bgs.ac.uk on 2026-11-10; awaiting a reply.**
 - Quality caveats for the error budget:
   - 2 km line spacing at 305 m clearance means lines are ~6.5× the flight height apart
     **[derived]**, so short-wavelength anomalies between lines are undersampled. By contrast the
     MagNav challenge "Perth mini-survey" deliberately used line spacing < AGL height so the map is
     fully sampled (Gnadt et al. 2020).
+  - **Measured 2026-11-10** by flight-line hold-out ([map-validation.md](map-validation.md)): RMS map
+    error between lines is 5–9 nT in southern/eastern England and 83–127 nT in central and northern Scotland, an
+    overestimate because holding out a line doubles the spacing.
   - Contour digitisation at a 10 nT interval: if the error is uniform within one interval, σ ≈
     10/√12 ≈ 2.9 nT **[derived, my assumption, not a published figure]**.
   - Mixed clearance heights (152/305/457 m) mean the map isn't at one altitude. Upward

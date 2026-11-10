@@ -20,7 +20,8 @@ test, not a result.
 |---|---|---|
 | 0 | Literature, data and sensor-parameter research ([docs/research-notes.md](docs/research-notes.md)) | done |
 | 1 | Rust workspace, map interpolation, particle filter on a synthetic map, benchmark | done |
-| 2 | Real BGS map, sensor models, error-budget sweeps | – |
+| 2a | Real BGS map: download, grid, hold-out validation, first real-map flights | done |
+| 2b–f | Upward continuation, sensor/calibration models, velocity-bias state, error-budget sweeps | – |
 | 3 | UK navigability heatmap | – |
 | 4 | Python bindings (PyO3 + maturin), plots | – |
 
@@ -30,7 +31,8 @@ test, not a result.
 crates/magnav-core   library: maps, simulation, particle filter
 crates/magnav-cli    `magnav` command-line driver
 crates/magnav-py     placeholder for Python bindings (Phase 4)
-docs/                research notes and citations
+scripts/             data pipeline (Python, run with uv): fetch, report, grid, validate
+docs/                research notes, data report, map validation
 ```
 
 ## Building and testing
@@ -42,6 +44,60 @@ cargo fmt --all --check
 cargo run --release -p magnav-cli -- demo --map gaussian   # filter vs INS on a synthetic map
 cargo run --release -p magnav-cli -- demo --map flat       # same flight, no map information
 ```
+
+## Getting the map data
+
+The BGS points are downloaded, not committed. The scripts use [uv](https://docs.astral.sh/uv/)
+inline dependencies, so no virtual environment needs setting up.
+
+```sh
+uv run scripts/fetch_bgs_aeromag.py    # 541,508 points -> data/raw/ (~2 min)
+uv run scripts/bgs_data_report.py      # docs/data-report.md
+uv run scripts/grid_bgs.py             # 250 m grid -> data/grid/bgs_250m.npy (+ .json)
+uv run scripts/holdout_bgs.py          # docs/map-validation.md (~2 min)
+cargo test -p magnav-core --test bgs_grid -- --ignored   # Rust reads the grid correctly
+cargo run --release -p magnav-cli -- demo --map-file data/grid/bgs_250m.npy --start-x 144000 --start-y 730000
+```
+
+## First results on the real map (Phase 2a)
+
+**How good is the 1955–65 map?** Removing 10% of flight lines and predicting them from the
+rest ([docs/map-validation.md](docs/map-validation.md)) gives the error between survey lines.
+This is an overestimate, because removing a line doubles the local line spacing:
+
+| Region | Held-out RMS error |
+|---|---|
+| Southern and eastern England (CA57, HG56, CA55_SOUTH) | 5–9 nT |
+| Rest of England, Wales and southern Scotland (CA55_NORTH, CA58–CA60, HG57, HG58, HG61) | 15–37 nT |
+| Central and northern Scotland (CA63, HG62, HG64, HG65) | 83–127 nT |
+
+For comparison, a sensor's noise floor is pT to nT, and good aircraft calibration reaches
+~5 nT (25 nT conservative; Sengupta 2025). In central and northern Scotland the map error is several times larger
+than either. The map is least accurate exactly where the field is strongest, i.e. where it
+carries the most position information.
+
+**Flying over it** (perfect sensor and the same map used for truth and filter, so a best
+case). Each run is 60 km east, and the INS ends 1000 m off. Lines are chosen by
+`scripts/pick_demo_lines.py`:
+
+| Line | RMS gradient | Prediction (fixed before running) | Result, 3 seeds |
+|---|---|---|---|
+| Isle of Mull (E 144 km, N 730 km) | 893 nT/km | filter < 200 m | 36–37 m: as predicted |
+| Dorset chalk (E 324 km, N 100 km) | 1.4 nT/km | filter ≥ 800 m (no fix) | 677–680 m: **prediction wrong** |
+
+Over Dorset the filter does get a fix early (76 m at 100 s). It then drifts with the INS
+velocity bias while reporting only ~110 m of spread, so it ends about 6σ off and
+overconfident. The cause is that the filter state has no velocity bias. Adding it, and checking
+the filter's consistency (error versus reported spread), is the next filter change.
+
+## Data findings
+
+- Three surveys in southern and eastern England were flown at a constant barometric height
+  (549 m or 457 m above sea level). All others, including all of Scotland, followed the
+  terrain at 152 m or 305 m. So the map is not at one altitude ([docs/data-report.md](docs/data-report.md)).
+- At a 500 m grid spacing the map failed its own fidelity check (18 nT RMS against ≤ 10 nT):
+  500 m blocks average away the steep Scottish anomalies. 250 m, the median spacing of points
+  along a line, passes narrowly (9.5 nT).
 
 ## What is validated so far (Phase 1)
 
@@ -84,5 +140,6 @@ seconds, magnetic field in nanotesla (nT).
 ## Data and licences
 
 Map data is **not** committed. The BGS Great Britain Aeromagnetic Survey is fetched from the
-[BGS OGC API](https://ogcapi.bgs.ac.uk/collections/aeromag). The licence is being confirmed (see
-research notes). If it is the Open Government Licence: "Contains NERC materials ©NERC [year]".
+[BGS OGC API](https://ogcapi.bgs.ac.uk/collections/aeromag). The collection metadata states no
+licence; BGS were asked to confirm on 2026-11-10. Until then only code and summary statistics
+are committed. If it is the Open Government Licence: "Contains NERC materials ©NERC [year]".
