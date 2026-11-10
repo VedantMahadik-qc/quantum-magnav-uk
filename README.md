@@ -21,7 +21,8 @@ test, not a result.
 | 0 | Literature, data and sensor-parameter research ([docs/research-notes.md](docs/research-notes.md)) | done |
 | 1 | Rust workspace, map interpolation, particle filter on a synthetic map, benchmark | done |
 | 2a | Real BGS map: download, grid, hold-out validation, first real-map flights | done |
-| 2b–f | Upward continuation, sensor/calibration models, velocity-bias state, error-budget sweeps | – |
+| 2e | Filter estimates the INS velocity bias (marginalised particle filter), NEES consistency metric | done |
+| 2b–d, f | Upward continuation, sensor/calibration models, separate truth/filter maps, error-budget sweeps | – |
 | 3 | UK navigability heatmap | – |
 | 4 | Python bindings (PyO3 + maturin), plots | – |
 
@@ -77,18 +78,29 @@ than either. The map is least accurate exactly where the field is strongest, i.e
 carries the most position information.
 
 **Flying over it** (perfect sensor and the same map used for truth and filter, so a best
-case). Each run is 60 km east, and the INS ends 1000 m off. Lines are chosen by
-`scripts/pick_demo_lines.py`:
+case). Each run is 60 km east, and the INS ends 1000 m off because of a 2 m/s velocity bias.
+Lines are chosen by `scripts/pick_demo_lines.py`. Final errors, 3 seeds:
 
-| Line | RMS gradient | Prediction (fixed before running) | Result, 3 seeds |
+| Line | RMS gradient | Position-only filter | With bias estimation |
 |---|---|---|---|
-| Isle of Mull (E 144 km, N 730 km) | 893 nT/km | filter < 200 m | 36–37 m: as predicted |
-| Dorset chalk (E 324 km, N 100 km) | 1.4 nT/km | filter ≥ 800 m (no fix) | 677–680 m: **prediction wrong** |
+| Isle of Mull (E 144 km, N 730 km) | 893 nT/km | 36–37 m (predicted < 200 m) | 1.8–2.3 m (predicted < 10 m) |
+| Dorset chalk (E 324 km, N 100 km) | 1.4 nT/km | 677–680 m (predicted ≥ 800 m: **wrong**) | 26–69 m, error 0.14–0.37× reported spread (predicted ≤ 3×) |
 
-Over Dorset the filter does get a fix early (76 m at 100 s). It then drifts with the INS
-velocity bias while reporting only ~110 m of spread, so it ends about 6σ off and
-overconfident. The cause is that the filter state has no velocity bias. Adding it, and checking
-the filter's consistency (error versus reported spread), is the next filter change.
+The first Dorset prediction failed in an instructive way. The position-only filter got a fix
+early (76 m at 100 s), then drifted with the INS bias while reporting only ~110 m of spread,
+ending about 6σ off: *overconfident*. Estimating the bias fixes both problems, and the filter
+learns the 2 m/s bias even over flat chalk.
+
+How the bias is estimated matters. Simply adding it to each particle's state failed the
+pre-set bias check: resampling collapses the bias hypotheses, and the filter ends confidently
+wrong (sample impoverishment). The filter now *marginalises* the bias instead. Each particle carries an exact Kalman
+estimate of it (Schön, Gustafsson & Nordlund 2005), which is also the method used in the
+MagNav literature (Canciani & Raquet 2016, as cited in Sengupta 2025).
+
+Current limitation: with bias estimation the filter is *underconfident*. NEES, the normalised
+estimation error squared, is ≈ 0.01–0.1 against an ideal of 2. The 5 m/√s position process
+noise was sized to absorb the unmodelled bias. It will be re-sized when the INS model gets
+datasheet-sourced error parameters.
 
 ## Data findings
 
@@ -99,7 +111,7 @@ the filter's consistency (error versus reported spread), is the next filter chan
   500 m blocks average away the steep Scottish anomalies. 250 m, the median spacing of points
   along a line, passes narrowly (9.5 nT).
 
-## What is validated so far (Phase 1)
+## What is validated so far (synthetic maps)
 
 Each check has its pass criterion fixed before it was run; see the test files for details.
 
@@ -110,6 +122,9 @@ Each check has its pass criterion fixed before it was run; see the test files fo
 | Filter on a strongly varying synthetic map, 5 seeds | final error < 100 m and < 0.2x INS | 23-52 m vs 1000 m INS |
 | Filter on a flat map, 5 seeds | no resampling; spread = sqrt(s0^2 + q^2 t) +/-5%; tracks INS; final error >= 0.8x INS | 982-1014 m (no convergence, as required) |
 | Serial vs rayon | bit-identical results on 1, 3, 16 threads | pass |
+| Bias estimation on, strongly varying map, 5 seeds | final error < 0.5x position-only filter; bias within 0.2 m/s | 0.3–1.2 m (vs 23–52 m); bias within 0.045 m/s |
+| Bias estimation on, consistency | mean NEES over last 300 s <= 6 | 0.01 (conservative) |
+| Bias estimation on, flat map | final error >= 0.8x INS | 972–1026 m (no convergence, as required) |
 
 One finding from building these tests: where the map is locally flat, the filter correctly
 falls back to INS dead reckoning and its error grows at the INS drift rate. That is the
