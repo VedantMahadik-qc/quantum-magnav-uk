@@ -39,6 +39,8 @@ fn filter_step(c: &mut Criterion) {
                 n_particles: n,
                 initial_sigma_m: 1_000.0,
                 process_noise_m_per_sqrt_s: 5.0,
+                initial_bias_sigma_m_per_s: 0.0,
+                bias_noise_m_per_s_per_sqrt_s: 0.0,
                 measurement_sigma_nt: 2.0,
                 resample_fraction: 0.5,
                 seed: 1,

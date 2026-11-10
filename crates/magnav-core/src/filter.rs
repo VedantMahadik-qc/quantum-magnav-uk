@@ -1,9 +1,10 @@
-//! A bootstrap particle filter for 2-D map-matching navigation.
+//! A particle filter for map-matching navigation, optionally estimating the INS velocity bias.
 //!
-//! Each particle is a hypothesis about the vehicle's horizontal position. Every step:
+//! Each particle is a hypothesis about the vehicle's horizontal position `p`. The INS reports
+//! `true velocity + b` with an unknown bias `b`. Every step:
 //!
-//! 1. **Predict:** move each particle by the INS-reported velocity times `dt`, plus random
-//!    jitter (process noise) so the cloud can absorb INS errors.
+//! 1. **Predict:** move each particle by its bias-corrected velocity, `(v_INS - b̂) * dt`, plus
+//!    random jitter (process noise) so the cloud can absorb unmodelled INS errors.
 //! 2. **Update:** multiply each particle's weight by the likelihood of the magnetometer
 //!    reading given the map value at that particle: `exp(-(z - M(x))^2 / (2 sigma_R^2))`.
 //!    Computed in log space, subtracting the maximum before `exp`, to avoid underflow.
@@ -13,6 +14,24 @@
 //!
 //! The filter never sees the true position. Its only inputs are the map, the INS velocity
 //! and the measurement.
+//!
+//! ## Bias estimation (marginalised particle filter)
+//! Sampling `b` as two more particle coordinates fails: resampling keeps copying the same few
+//! bias values, the bias cloud collapses, and the filter becomes confidently wrong (tried and
+//! measured; see the sanity tests). But given a particle's path, `b` enters the motion model
+//! linearly with Gaussian noise, so it can be handled exactly by a small Kalman filter
+//! inside each particle (Schön, Gustafsson & Nordlund, "Marginalized particle filters for
+//! mixed linear/nonlinear state-space models", IEEE Trans. Signal Processing 53(7), 2005).
+//!
+//! Per axis, with prior `b ~ N(b̂, P)` and position process noise variance `Q dt`:
+//! - the particle moves by `(v_INS - b̂) dt + n`, with `n ~ N(0, Q dt + P dt^2)`;
+//! - that move is a measurement of `b` (`H = -dt`, `R = Q dt`), with innovation exactly `n`,
+//!   so `b̂ += K n` with gain `K = -P dt / (P dt^2 + Q dt)`;
+//! - then `P ← P - P^2 dt^2 / (P dt^2 + Q dt) + Q_b dt` (Kalman update plus random walk).
+//!
+//! `P` and `K` do not depend on the particle, so they are scalars shared by all particles. Only
+//! `b̂` is per particle. With the bias terms of [`FilterConfig`] at zero, `P = K = 0`, every
+//! `b̂` stays at zero and this is exactly the plain 2-D position filter.
 //!
 //! ## Reproducibility
 //! Particle `i` at step `k` draws its random numbers from its own generator seeded by
@@ -41,6 +60,12 @@ pub struct FilterConfig {
     /// Process noise: per-axis position random walk, in m/√s. A step of `dt` seconds adds
     /// jitter with standard deviation `process_noise * sqrt(dt)`.
     pub process_noise_m_per_sqrt_s: f64,
+    /// Standard deviation (m/s, per axis) of the zero-mean prior on the INS velocity bias.
+    /// Zero (together with zero bias noise) turns bias estimation off.
+    pub initial_bias_sigma_m_per_s: f64,
+    /// Bias random walk (m/s per √s, per axis) assumed by the filter's bias model. Zero means
+    /// a constant bias.
+    pub bias_noise_m_per_s_per_sqrt_s: f64,
     /// Measurement likelihood width (nT). It should cover sensor noise plus map error.
     pub measurement_sigma_nt: f64,
     /// Resample when ESS < `resample_fraction * n_particles`.
@@ -74,11 +99,35 @@ pub enum FilterError {
     },
 }
 
+/// A symmetric 2 x 2 covariance matrix (m^2).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Cov2 {
+    /// Variance in x.
+    pub xx: f64,
+    /// Covariance of x and y.
+    pub xy: f64,
+    /// Variance in y.
+    pub yy: f64,
+}
+
+impl Cov2 {
+    /// Mahalanobis distance squared `e^T C^-1 e`. For a consistent filter, with `e` = estimate
+    /// minus truth and `C` its covariance, this is the NEES and averages 2 in two dimensions.
+    pub fn mahalanobis2(&self, e: Vec2) -> f64 {
+        let det = self.xx * self.yy - self.xy * self.xy;
+        (self.yy * e.x * e.x - 2.0 * self.xy * e.x * e.y + self.xx * e.y * e.y) / det
+    }
+}
+
 /// What happened in one filter step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StepSummary {
     /// Weighted mean position (m).
     pub estimate: Vec2,
+    /// Weighted mean INS velocity bias (m/s). Zero when bias estimation is off.
+    pub bias_estimate: Vec2,
+    /// Weighted covariance of the particle positions (m^2).
+    pub cov: Cov2,
     /// Per-axis RMS spread of the weighted particle cloud (m): `sqrt(trace(cov) / 2)`.
     pub spread_m: f64,
     /// Effective sample size `1 / sum(w^2)` after the update (before any resampling).
@@ -92,6 +141,10 @@ pub struct StepSummary {
 pub struct ParticleFilter {
     config: FilterConfig,
     positions: Vec<Vec2>,
+    /// Per-particle Kalman mean of the INS velocity bias (m/s), all zero when estimation is off.
+    biases: Vec<Vec2>,
+    /// Per-axis Kalman variance of the bias ((m/s)^2), the same for every particle.
+    bias_var: f64,
     /// Normalised weights, summing to 1.
     weights: Vec<f64>,
     /// Number of completed steps.
@@ -105,7 +158,8 @@ pub struct ParticleFilter {
 const RESAMPLE_STREAM: u64 = u64::MAX;
 
 impl ParticleFilter {
-    /// Creates a filter with particles drawn from `N(initial_guess, initial_sigma^2 I)`.
+    /// Creates a filter with positions drawn from `N(initial_guess, initial_sigma^2 I)` and
+    /// every particle's bias prior `N(0, initial_bias_sigma^2 I)`.
     pub fn new(config: FilterConfig, initial_guess: Vec2) -> Self {
         let n = config.n_particles;
         assert!(n > 0, "need at least one particle");
@@ -116,6 +170,8 @@ impl ParticleFilter {
             })
             .collect();
         Self {
+            biases: vec![Vec2::default(); n],
+            bias_var: config.initial_bias_sigma_m_per_s.powi(2),
             weights: vec![1.0 / n as f64; n],
             log_weights: vec![0.0; n],
             resample_indices: Vec::with_capacity(n),
@@ -128,6 +184,16 @@ impl ParticleFilter {
     /// Particle positions (m).
     pub fn positions(&self) -> &[Vec2] {
         &self.positions
+    }
+
+    /// Per-particle Kalman means of the INS velocity bias (m/s).
+    pub fn biases(&self) -> &[Vec2] {
+        &self.biases
+    }
+
+    /// Per-axis Kalman variance of the bias ((m/s)^2), shared by all particles.
+    pub fn bias_var(&self) -> f64 {
+        self.bias_var
     }
 
     /// Normalised particle weights.
@@ -148,6 +214,14 @@ impl ParticleFilter {
             .fold(Vec2::default(), |acc, (&p, &w)| acc + p * w)
     }
 
+    /// Weighted mean INS velocity bias (m/s).
+    pub fn bias_estimate(&self) -> Vec2 {
+        self.biases
+            .iter()
+            .zip(&self.weights)
+            .fold(Vec2::default(), |acc, (&b, &w)| acc + b * w)
+    }
+
     /// Advances the filter by one time step of `dt` seconds.
     ///
     /// `map` is borrowed (`&M`): the filter reads it but never owns or changes it.
@@ -166,22 +240,30 @@ impl ParticleFilter {
         self.step += 1;
         let step = self.step;
         let seed = self.config.seed;
-        let jitter_sigma = self.config.process_noise_m_per_sqrt_s * dt.sqrt();
+        // Kalman quantities for the bias, shared by every particle (see the module docs).
+        // `q_dt` is the position process noise variance, `s` the variance of a particle's move.
+        let p = self.bias_var;
+        let q_dt = self.config.process_noise_m_per_sqrt_s.powi(2) * dt;
+        let s = q_dt + p * dt * dt;
+        let gain = if s > 0.0 { -p * dt / s } else { 0.0 };
+        let jitter_sigma = s.sqrt();
         let inv_two_r2 = 1.0 / (2.0 * self.config.measurement_sigma_nt.powi(2));
-        let displacement = ins_velocity * dt;
 
-        // Predict + update for one particle. It only touches that particle's position, weight
+        // Predict + update for one particle. It only touches that particle's state, weight
         // and random stream, so particles can be processed in any order, or in parallel,
         // and give identical results.
-        let predict_and_weigh =
-            |(i, ((pos, &w), log_w)): (usize, ((&mut Vec2, &f64), &mut f64))| {
-                let mut rng = particle_rng(seed, step, i as u64);
-                *pos += displacement + gaussian_vec2(&mut rng) * jitter_sigma;
-                *log_w = match map.field_at(pos.x, pos.y) {
-                    Some(predicted) => w.ln() - (measurement_nt - predicted).powi(2) * inv_two_r2,
-                    None => f64::NEG_INFINITY, // off the map: impossible
-                };
+        let predict_and_weigh = |(i, (((pos, bias), &w), log_w)): Item<'_>| {
+            let mut rng = particle_rng(seed, step, i as u64);
+            // Move with the particle's bias estimate; the random part of the move is also the
+            // Kalman innovation for that particle's bias.
+            let noise = gaussian_vec2(&mut rng) * jitter_sigma;
+            *pos += (ins_velocity - *bias) * dt + noise;
+            *bias += noise * gain;
+            *log_w = match map.field_at(pos.x, pos.y) {
+                Some(predicted) => w.ln() - (measurement_nt - predicted).powi(2) * inv_two_r2,
+                None => f64::NEG_INFINITY, // off the map: impossible
             };
+        };
 
         // The same closure drives a serial iterator or a rayon parallel iterator. Rayon
         // splits the zipped slices into chunks and hands them to worker threads. The borrow
@@ -190,6 +272,7 @@ impl ParticleFilter {
             ExecMode::Serial => self
                 .positions
                 .iter_mut()
+                .zip(&mut self.biases)
                 .zip(&self.weights)
                 .zip(&mut self.log_weights)
                 .enumerate()
@@ -197,6 +280,7 @@ impl ParticleFilter {
             ExecMode::Parallel => self
                 .positions
                 .par_iter_mut()
+                .zip(&mut self.biases)
                 .zip(&self.weights)
                 .zip(&mut self.log_weights)
                 .enumerate()
@@ -220,8 +304,14 @@ impl ParticleFilter {
         self.weights.iter_mut().for_each(|w| *w /= total);
 
         let ess = 1.0 / self.weights.iter().map(|w| w * w).sum::<f64>();
+        // Bias variance: Kalman measurement update, then the random-walk time update.
+        let bias_q_dt = self.config.bias_noise_m_per_s_per_sqrt_s.powi(2) * dt;
+        self.bias_var = p + gain * dt * p + bias_q_dt;
+
         let estimate = self.estimate();
-        let spread_m = self.spread(estimate);
+        let bias_estimate = self.bias_estimate();
+        let cov = self.covariance(estimate);
+        let spread_m = ((cov.xx + cov.yy) / 2.0).sqrt();
 
         let resampled = ess < self.config.resample_fraction * self.config.n_particles as f64;
         if resampled {
@@ -229,37 +319,48 @@ impl ParticleFilter {
             systematic_resample(&self.weights, u0, &mut self.resample_indices);
             // Gather the chosen particles. `resample_indices` is a separate buffer, so we can
             // read from `positions` while building the new list.
-            let new_positions: Vec<Vec2> = self
-                .resample_indices
-                .iter()
-                .map(|&j| self.positions[j])
-                .collect();
-            self.positions = new_positions;
+            // A particle's position and bias are copied together. That pairing is how the
+            // map, which only sees positions, ends up correcting the bias too.
+            let gather =
+                |v: &[Vec2]| -> Vec<Vec2> { self.resample_indices.iter().map(|&j| v[j]).collect() };
+            self.positions = gather(&self.positions);
+            self.biases = gather(&self.biases);
             self.weights.fill(1.0 / self.config.n_particles as f64);
         }
 
         Ok(StepSummary {
             estimate,
+            bias_estimate,
+            cov,
             spread_m,
             ess,
             resampled,
         })
     }
 
-    /// Per-axis RMS spread of the weighted cloud around `mean`.
-    fn spread(&self, mean: Vec2) -> f64 {
-        let trace: f64 = self
-            .positions
+    /// Weighted covariance of the particle positions around `mean`.
+    fn covariance(&self, mean: Vec2) -> Cov2 {
+        self.positions
             .iter()
             .zip(&self.weights)
-            .map(|(&p, &w)| {
+            .fold(Cov2::default(), |c, (&p, &w)| {
                 let d = p - mean;
-                w * (d.x * d.x + d.y * d.y)
+                Cov2 {
+                    xx: c.xx + w * d.x * d.x,
+                    xy: c.xy + w * d.x * d.y,
+                    yy: c.yy + w * d.y * d.y,
+                }
             })
-            .sum();
-        (trace / 2.0).sqrt()
     }
 }
+
+/// One particle's slice of the state, as the zipped iterators in [`ParticleFilter::step`]
+/// yield it: `(index, (((position, bias), weight), log_weight))`. The lifetime `'a` says all
+/// the references borrow from the same filter for the same duration.
+type Item<'a> = (
+    usize,
+    (((&'a mut Vec2, &'a mut Vec2), &'a f64), &'a mut f64),
+);
 
 /// Two independent standard-normal draws as a vector.
 fn gaussian_vec2(rng: &mut Xoshiro256PlusPlus) -> Vec2 {
@@ -314,6 +415,8 @@ mod tests {
             n_particles: n,
             initial_sigma_m: 100.0,
             process_noise_m_per_sqrt_s: 1.0,
+            initial_bias_sigma_m_per_s: 0.0,
+            bias_noise_m_per_s_per_sqrt_s: 0.0,
             measurement_sigma_nt: 2.0,
             resample_fraction: 0.5,
             seed: 1,

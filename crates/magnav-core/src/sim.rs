@@ -7,7 +7,7 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use thiserror::Error;
 
-use crate::filter::{FilterConfig, FilterError, ParticleFilter};
+use crate::filter::{Cov2, FilterConfig, FilterError, ParticleFilter};
 use crate::map::FieldMap;
 use crate::sensor::Magnetometer;
 use crate::trajectory::{ConstantBiasIns, StraightLine};
@@ -39,6 +39,10 @@ pub struct StepRecord {
     pub ins: Vec2,
     /// Filter estimate.
     pub estimate: Vec2,
+    /// Filter estimate of the INS velocity bias (m/s).
+    pub bias_estimate: Vec2,
+    /// Filter position covariance (m^2).
+    pub cov: Cov2,
     /// Filter per-axis spread (m).
     pub spread_m: f64,
     /// Effective sample size after the update.
@@ -51,6 +55,12 @@ impl StepRecord {
     /// Horizontal distance between estimate and truth (m).
     pub fn filter_error_m(&self) -> f64 {
         (self.estimate - self.truth).norm()
+    }
+
+    /// Normalised estimation error squared, `e^T P^-1 e`. Averages 2 for a filter whose
+    /// reported covariance matches its actual errors; much larger means overconfident.
+    pub fn nees(&self) -> f64 {
+        self.cov.mahalanobis2(self.estimate - self.truth)
     }
 
     /// Horizontal distance between INS dead reckoning and truth (m).
@@ -110,6 +120,8 @@ where
                 .ins
                 .dead_reckon(scenario.ins_start, &scenario.truth, t),
             estimate: summary.estimate,
+            bias_estimate: summary.bias_estimate,
+            cov: summary.cov,
             spread_m: summary.spread_m,
             ess: summary.ess,
             resampled: summary.resampled,

@@ -50,6 +50,8 @@ fn config(seed: u64) -> FilterConfig {
         n_particles: N_PARTICLES,
         initial_sigma_m: INITIAL_SIGMA_M,
         process_noise_m_per_sqrt_s: PROCESS_NOISE,
+        initial_bias_sigma_m_per_s: 0.0,
+        bias_noise_m_per_s_per_sqrt_s: 0.0,
         measurement_sigma_nt: 2.0,
         resample_fraction: 0.5,
         seed,
@@ -205,5 +207,89 @@ fn serial_and_parallel_are_bit_identical() {
             .unwrap();
         let parallel = pool.install(|| with_mode(ExecMode::Parallel));
         assert_eq!(serial, parallel, "differs with {threads} threads");
+    }
+}
+
+// ---- Velocity-bias estimation. Criteria fixed before the first run. ----
+//
+// History: the first implementation sampled the bias as extra particle coordinates. It passed
+// the position and NEES checks but failed the bias check (errors 0.35-1.0 m/s while the
+// filter claimed ~0.2 m/s; with less position jitter some seeds diverged to ~300 m). That
+// is sample impoverishment. The filter now marginalises the bias (see `filter.rs`) and must
+// pass the same criteria.
+
+/// The true INS velocity bias in `scenario()`.
+const TRUE_BIAS: Vec2 = Vec2::new(0.0, 2.0);
+
+/// `config` with bias estimation on: a 2 m/s per-axis prior (so the true bias sits at 1 sigma)
+/// and a 0.01 m/s/√s random walk in the filter's bias model. Synthetic test values.
+fn bias_config(seed: u64) -> FilterConfig {
+    FilterConfig {
+        initial_bias_sigma_m_per_s: 2.0,
+        bias_noise_m_per_s_per_sqrt_s: 0.01,
+        ..config(seed)
+    }
+}
+
+fn run_with<M: FieldMap + Sync>(map: &M, cfg: &FilterConfig, seed: u64) -> Vec<StepRecord> {
+    run_scenario(map, &IdealSensor, &scenario(), cfg, seed).unwrap()
+}
+
+/// Mean NEES over the last 300 steps of a run.
+fn tail_nees(records: &[StepRecord]) -> f64 {
+    let tail = &records[records.len() - 300..];
+    tail.iter().map(StepRecord::nees).sum::<f64>() / tail.len() as f64
+}
+
+#[test]
+fn estimating_the_bias_beats_the_position_only_filter() {
+    // Pass, every seed: final error < 0.5 x the 2-D filter's, and the final bias estimate
+    // within 0.2 m/s of the truth.
+    for seed in SEEDS {
+        let grid = gaussian_map(seed).to_grid(100.0).unwrap();
+        let without = run_with(&grid, &config(seed), seed);
+        let with = run_with(&grid, &bias_config(seed), seed);
+        let (e2, e4) = (
+            without.last().unwrap().filter_error_m(),
+            with.last().unwrap().filter_error_m(),
+        );
+        let bias_err = (with.last().unwrap().bias_estimate - TRUE_BIAS).norm();
+        println!("seed {seed}: 2-D {e2:.1} m, with bias {e4:.1} m, bias error {bias_err:.3} m/s");
+        assert!(e4 < 0.5 * e2, "seed {seed}: {e4:.1} m vs 2-D {e2:.1} m");
+        assert!(bias_err < 0.2, "seed {seed}: bias error {bias_err:.3} m/s");
+    }
+}
+
+#[test]
+fn bias_filter_is_consistent_on_an_informative_map() {
+    // Pass: mean NEES over the last 300 s, averaged over seeds, <= 6. A consistent 2-D
+    // filter averages 2; the bound is loose because successive NEES values are correlated.
+    let mut with = 0.0;
+    let mut without = 0.0;
+    for seed in SEEDS {
+        let grid = gaussian_map(seed).to_grid(100.0).unwrap();
+        with += tail_nees(&run_with(&grid, &bias_config(seed), seed)) / SEEDS.len() as f64;
+        without += tail_nees(&run_with(&grid, &config(seed), seed)) / SEEDS.len() as f64;
+    }
+    println!("mean NEES, last 300 s: with bias {with:.2}, position-only {without:.2}");
+    assert!(with <= 6.0, "mean NEES {with:.2}");
+}
+
+#[test]
+fn bias_filter_does_not_converge_on_a_flat_map() {
+    // With no map information the bias cannot be learned either. Pass, every seed: final
+    // error >= 0.8 x INS-only error.
+    let flat = FlatField {
+        value_nt: 50.0,
+        bounds: BOUNDS,
+    };
+    for seed in SEEDS {
+        let last = *run_with(&flat, &bias_config(seed), seed).last().unwrap();
+        println!(
+            "flat seed {seed}: filter {:.1} m, INS {:.1} m",
+            last.filter_error_m(),
+            last.ins_error_m()
+        );
+        assert!(last.filter_error_m() >= 0.8 * last.ins_error_m());
     }
 }
