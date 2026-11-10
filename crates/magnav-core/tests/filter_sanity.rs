@@ -6,7 +6,8 @@
 //! Integration tests live in `tests/` and can only use the crate's public API, exactly like
 //! an external user would.
 
-use magnav_core::sensor::IdealSensor;
+use magnav_core::ins::{ImuSpec, InsModel, SchulerIns};
+use magnav_core::sensor::{IdealSensor, WhiteNoiseSensor};
 use magnav_core::synthetic::{FlatField, GaussianSumField, RandomFieldParams};
 use magnav_core::trajectory::{ConstantBiasIns, StraightLine};
 use magnav_core::{
@@ -38,7 +39,8 @@ fn scenario() -> Scenario {
         truth,
         ins: ConstantBiasIns {
             velocity_bias: Vec2::new(0.0, 2.0),
-        },
+        }
+        .into(),
         ins_start: truth.start + Vec2::new(600.0, -400.0),
         dt: 1.0,
         n_steps: 600,
@@ -291,5 +293,95 @@ fn bias_filter_does_not_converge_on_a_flat_map() {
             last.ins_error_m()
         );
         assert!(last.filter_error_m() >= 0.8 * last.ins_error_m());
+    }
+}
+
+// ---- Realistic INS: HG4930 (CA51) free-inertial errors. ----
+//
+// GNSS is lost at t = 0 with the INS and filter exactly on the true position; the filter's
+// prior is 10 m. The filter's bias random walk is sized from the INS model so that over the
+// flight it spans the expected 1-sigma velocity error: q_b = sigma_v(T) / sqrt(T).
+//
+// History: the criteria below were first run with an *ideal* sensor and failed. Mean NEES was
+// 0.17-0.19 for every q in the sweep, so q was not the cause. A diagnostic then showed that
+// the filter's 2 nT likelihood is the problem when the readings are in fact exact: with 2 nT
+// white sensor noise (matching the likelihood) NEES rose to 1.2-1.3. The test now uses
+// matched noise. That change was made AFTER seeing the diagnostic, so this test is a
+// regression check, not a pre-registered prediction.
+
+const HG4930: SchulerIns = SchulerIns {
+    spec: ImuSpec::HG4930_CA51,
+};
+
+fn hg4930_scenario() -> Scenario {
+    let truth = scenario().truth;
+    Scenario {
+        ins: InsModel::Schuler(HG4930),
+        ins_start: truth.start,
+        ..scenario()
+    }
+}
+
+fn hg4930_config(seed: u64, process_noise: f64) -> FilterConfig {
+    let flight_s = 600.0;
+    FilterConfig {
+        initial_sigma_m: 10.0,
+        process_noise_m_per_sqrt_s: process_noise,
+        initial_bias_sigma_m_per_s: 0.0,
+        bias_noise_m_per_s_per_sqrt_s: HG4930.velocity_error_sigma(flight_s) / flight_s.sqrt(),
+        ..config(seed)
+    }
+}
+
+/// One point of the process-noise sweep.
+struct SweepPoint {
+    q: f64,
+    nees: f64,
+    /// (filter, INS-only) final errors per seed (m).
+    finals: Vec<(f64, f64)>,
+}
+
+#[test]
+fn process_noise_sized_for_a_real_imu_gives_a_consistent_filter() {
+    // Sweep q over {0.5, 1, 2, 5} m/√s. Pick the q whose mean NEES (last 300 s, averaged
+    // over seeds) is closest to 2 in log ratio. Pass: that NEES is in [0.5, 8], and with it
+    // every seed ends with error < 0.2 x the INS-only error.
+    let mut best: Option<SweepPoint> = None;
+    for q in [0.5, 1.0, 2.0, 5.0] {
+        let mut nees = 0.0;
+        let mut finals = Vec::new();
+        for seed in SEEDS {
+            let grid = gaussian_map(seed).to_grid(100.0).unwrap();
+            let records = run_scenario(
+                &grid,
+                &WhiteNoiseSensor { sigma_nt: 2.0 },
+                &hg4930_scenario(),
+                &hg4930_config(seed, q),
+                seed,
+            )
+            .unwrap();
+            nees += tail_nees(&records) / SEEDS.len() as f64;
+            let last = records.last().unwrap();
+            finals.push((last.filter_error_m(), last.ins_error_m()));
+        }
+        println!("q = {q} m/√s: mean NEES {nees:.2}, (filter, INS) final errors {finals:.1?}");
+        let better = best
+            .as_ref()
+            .is_none_or(|b| (nees / 2.0).ln().abs() < (b.nees / 2.0).ln().abs());
+        if better {
+            best = Some(SweepPoint { q, nees, finals });
+        }
+    }
+    let SweepPoint { q, nees, finals } = best.unwrap();
+    println!("chosen q = {q} m/√s (NEES {nees:.2})");
+    assert!(
+        (0.5..=8.0).contains(&nees),
+        "best NEES {nees:.2} at q = {q}"
+    );
+    for (seed, (err, ins_err)) in SEEDS.iter().zip(finals) {
+        assert!(
+            err < 0.2 * ins_err,
+            "seed {seed}: {err:.1} m vs INS {ins_err:.1} m"
+        );
     }
 }
