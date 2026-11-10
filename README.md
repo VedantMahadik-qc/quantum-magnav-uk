@@ -22,6 +22,7 @@ test, not a result.
 | 1 | Rust workspace, map interpolation, particle filter on a synthetic map, benchmark | done |
 | 2a | Real BGS map: download, grid, hold-out validation, first real-map flights | done |
 | 2e | Filter estimates the INS velocity bias (marginalised particle filter), NEES consistency metric | done |
+| 2e+ | Realistic INS: Schuler-loop errors from HG4930 datasheet values; filter tuned for it | done |
 | 2b–d, f | Upward continuation, sensor/calibration models, separate truth/filter maps, error-budget sweeps | – |
 | 3 | UK navigability heatmap | – |
 | 4 | Python bindings (PyO3 + maturin), plots | – |
@@ -97,10 +98,42 @@ wrong (sample impoverishment). The filter now *marginalises* the bias instead. E
 estimate of it (Schön, Gustafsson & Nordlund 2005), which is also the method used in the
 MagNav literature (Canciani & Raquet 2016, as cited in Sengupta 2025).
 
-Current limitation: with bias estimation the filter is *underconfident*. NEES, the normalised
-estimation error squared, is ≈ 0.01–0.1 against an ideal of 2. The 5 m/√s position process
-noise was sized to absorb the unmodelled bias. It will be re-sized when the INS model gets
-datasheet-sourced error parameters.
+These runs use a perfect sensor, so the filter is *underconfident*. NEES, the normalised
+estimation error squared, is about 0.01–0.1 against an ideal of 2. I first blamed the 5 m/√s
+position process noise. A sweep showed it isn't the cause: the filter's 2 nT likelihood meets
+readings that are actually exact. See the next section.
+
+## A realistic INS (HG4930)
+
+The 2 m/s constant bias above is a toy. An unaided tactical-grade INS is much worse, and its
+error grows with time. `crates/magnav-core/src/ins.rs` models each horizontal axis with the
+standard Schuler loop (velocity error and tilt coupled through gravity and Earth radius),
+propagated exactly. It uses the **Honeywell HG4930** (grade CA51) values from Honeywell's
+*Performance and Environmental Information* (N61-1775-000-000, 06/17): gyro bias 1.0 °/h,
+ARW 0.09 °/√h, accelerometer bias 0.3 mg, VRW 0.09 m/s/√h.
+After a 10-minute GNSS outage this INS is typically **0.2–4 km** off, mostly from the gyro
+bias tilting the platform.
+
+The filter's bias model is sized from the same IMU model. With 2 nT sensor noise matching the
+filter's likelihood, it is consistent: mean NEES is 1.2–1.3 on synthetic maps for every
+q in 0.5–5 m/√s, and q = 1 m/√s is used. On the real map, 60 km east, starting on the true
+position at GNSS loss, 3 seeds:
+
+| Line | INS alone | MagNav filter | Error ÷ reported spread |
+|---|---|---|---|
+| Isle of Mull | 214–3949 m | **4.5–6.6 m** | 0.26–0.37 |
+| Dorset chalk | 214–3949 m | **283–1132 m** | 0.98–2.98 |
+
+So where the crust is strongly magnetic, MagNav holds a realistic INS to metres. Over the
+chalk it only roughly halves the error. On one seed it is slightly worse than an INS that
+happened to draw small biases. This is the navigability contrast Phase 3 will map
+nationally. (Predictions fixed before running: Mull < 50 m, and error ≤ 3× spread on both lines.
+Both passed; Dorset seed 3 only just, at 2.98×.)
+
+```sh
+cargo run --release -p magnav-cli -- demo --map-file data/grid/bgs_250m.npy \
+    --start-x 144000 --start-y 730000 --ins hg4930 --sensor-noise-nt 2
+```
 
 ## Data findings
 
@@ -125,6 +158,12 @@ Each check has its pass criterion fixed before it was run; see the test files fo
 | Bias estimation on, strongly varying map, 5 seeds | final error < 0.5x position-only filter; bias within 0.2 m/s | 0.3–1.2 m (vs 23–52 m); bias within 0.045 m/s |
 | Bias estimation on, consistency | mean NEES over last 300 s <= 6 | 0.01 (conservative) |
 | Bias estimation on, flat map | final error >= 0.8x INS | 972–1026 m (no convergence, as required) |
+| Schuler INS, bias-only responses | match closed-form solutions to 1e-3 | pass |
+| Schuler INS, 2000-flight Monte Carlo | velocity-error std within 5% of the sizing formula | pass |
+| HG4930 INS, q sweep, 2 nT matched noise* | best NEES in [0.5, 8]; final < 0.2x INS | q = 1: NEES 1.28; 4–32 m vs 214–3949 m |
+
+\* Criterion revised after a diagnostic: with an ideal sensor it failed (NEES 0.17–0.19).
+It is a regression check, not a prediction.
 
 One finding from building these tests: where the map is locally flat, the filter correctly
 falls back to INS dead reckoning and its error grows at the INS drift rate. That is the

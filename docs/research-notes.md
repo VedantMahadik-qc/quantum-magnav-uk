@@ -110,6 +110,9 @@ Observations relevant to the hypothesis:
   walk. I'll model it that way rather than invent a drift rate.
 
 ### Not-yet-sourced numbers (do NOT use until sourced)
-- INS drift rates for tactical/navigation-grade IMUs (needed in Phase 2; e.g. velocity random walk,
-  bias instability from a datasheet such as a tactical-grade MEMS IMU).
+- ~~INS drift rates~~ **Sourced 2026-11-10:** Honeywell HG4930 *Performance and Environmental
+  Information* (N61-1775-000-000, 06/17). Grade CA51 (third column): gyro in-run bias stability
+  1.0 °/h 1σ, bias repeatability 20 °/h; ARW 0.09 °/√h max; accel in-run bias stability 0.3 mg
+  1σ, repeatability 5 mg; VRW 0.09 m/s/√h max. Text extraction labels both the third and fourth
+  columns "CA51", so the worse third column is used. Used in `ins.rs`.
 - Long-term (hours) bias stability for fluxgate and NV in flight conditions.
