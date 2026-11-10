@@ -4,6 +4,8 @@
 //! magnav demo --map gaussian --particles 5000 --seed 1 --out run.csv
 //! magnav demo --map flat
 //! magnav demo --map-file data/grid/bgs_250m.npy --start-x 200000 --start-y 750000
+//! magnav demo --map-file data/grid/bgs_250m.npy --start-x 144000 --start-y 730000 \
+//!     --ins hg4930 --sensor-noise-nt 2
 //! ```
 //!
 //! Error handling: the library returns typed errors (`thiserror` enums) so callers can match
@@ -16,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use magnav_core::ins::{ImuSpec, InsModel, SchulerIns};
 use magnav_core::sensor::{IdealSensor, Magnetometer, WhiteNoiseSensor};
 use magnav_core::synthetic::{FlatField, GaussianSumField, RandomFieldParams};
 use magnav_core::trajectory::{ConstantBiasIns, StraightLine};
@@ -59,19 +62,36 @@ struct DemoArgs {
     /// Magnetometer white noise, standard deviation per sample (nT). 0 = ideal sensor.
     #[arg(long, default_value_t = 0.0)]
     sensor_noise_nt: f64,
+    /// INS error model.
+    #[arg(long, value_enum, default_value_t = InsKind::ConstantBias)]
+    ins: InsKind,
+    /// Filter position process noise (m/√s). Default: 5 (constant-bias), 1 (hg4930).
+    #[arg(long)]
+    process_noise: Option<f64>,
     /// Prior standard deviation of the INS velocity bias the filter estimates (m/s per axis).
-    /// 0 turns bias estimation off (position-only filter).
-    #[arg(long, default_value_t = 2.0)]
-    bias_prior: f64,
-    /// Random walk of the filter's bias model (m/s per √s).
-    #[arg(long, default_value_t = 0.01)]
-    bias_noise: f64,
+    /// 0 together with --bias-noise 0 turns bias estimation off. Default: 2 (constant-bias),
+    /// 0 (hg4930, whose velocity error is zero when GNSS is lost).
+    #[arg(long)]
+    bias_prior: Option<f64>,
+    /// Random walk of the filter's bias model (m/s per √s). Default: 0.01 (constant-bias);
+    /// for hg4930, sized from the IMU model as sigma_v(T) / sqrt(T) over the flight.
+    #[arg(long)]
+    bias_noise: Option<f64>,
     /// Run the filter single-threaded instead of with rayon.
     #[arg(long)]
     serial: bool,
     /// Write per-step results to this CSV file.
     #[arg(long)]
     out: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum InsKind {
+    /// Synthetic: 2 m/s constant velocity bias, INS starts 721 m off (as in the sanity tests).
+    ConstantBias,
+    /// Unaided INS on a Honeywell HG4930 (CA51) IMU, Schuler-loop errors from zero at GNSS
+    /// loss; the filter starts on the true position with a 10 m prior.
+    Hg4930,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -172,21 +192,44 @@ fn run<M: FieldMap + Sync, S: Magnetometer>(
         ),
         velocity: Vec2::new(100.0, 0.0),
     };
+    let (dt, n_steps) = (1.0, 600);
+    // Per-INS defaults: (INS model, INS start, initial sigma, process noise, bias prior,
+    // bias noise). Command-line flags override the last three.
+    let (ins, ins_start, initial_sigma, q, bias_prior, bias_noise): (InsModel, _, _, _, _, _) =
+        match args.ins {
+            InsKind::ConstantBias => (
+                ConstantBiasIns {
+                    velocity_bias: Vec2::new(0.0, 2.0),
+                }
+                .into(),
+                truth.start + Vec2::new(600.0, -400.0),
+                1_000.0,
+                5.0,
+                2.0,
+                0.01,
+            ),
+            InsKind::Hg4930 => {
+                let ins = SchulerIns {
+                    spec: ImuSpec::HG4930_CA51,
+                };
+                let flight_s = dt * n_steps as f64;
+                let sized = ins.velocity_error_sigma(flight_s) / flight_s.sqrt();
+                (InsModel::Schuler(ins), truth.start, 10.0, 1.0, 0.0, sized)
+            }
+        };
     let scenario = Scenario {
         truth,
-        ins: ConstantBiasIns {
-            velocity_bias: Vec2::new(0.0, 2.0),
-        },
-        ins_start: truth.start + Vec2::new(600.0, -400.0),
-        dt: 1.0,
-        n_steps: 600,
+        ins,
+        ins_start,
+        dt,
+        n_steps,
     };
     let config = FilterConfig {
         n_particles: args.particles,
-        initial_sigma_m: 1_000.0,
-        process_noise_m_per_sqrt_s: 5.0,
-        initial_bias_sigma_m_per_s: args.bias_prior,
-        bias_noise_m_per_s_per_sqrt_s: args.bias_noise,
+        initial_sigma_m: initial_sigma,
+        process_noise_m_per_sqrt_s: args.process_noise.unwrap_or(q),
+        initial_bias_sigma_m_per_s: args.bias_prior.unwrap_or(bias_prior),
+        bias_noise_m_per_s_per_sqrt_s: args.bias_noise.unwrap_or(bias_noise),
         // The likelihood must be at least as wide as the sensor noise.
         measurement_sigma_nt: 2.0_f64.max(args.sensor_noise_nt),
         resample_fraction: 0.5,
