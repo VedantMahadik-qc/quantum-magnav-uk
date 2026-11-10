@@ -9,6 +9,7 @@
 //! - Magnetic field values are total-field anomalies in **nanotesla (nT)**.
 
 pub mod filter;
+pub mod ins;
 pub mod map;
 pub mod sensor;
 pub mod sim;

@@ -8,9 +8,10 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use thiserror::Error;
 
 use crate::filter::{Cov2, FilterConfig, FilterError, ParticleFilter};
+use crate::ins::InsModel;
 use crate::map::FieldMap;
 use crate::sensor::Magnetometer;
-use crate::trajectory::{ConstantBiasIns, StraightLine};
+use crate::trajectory::StraightLine;
 use crate::vec2::Vec2;
 
 /// A simulated flight.
@@ -19,7 +20,7 @@ pub struct Scenario {
     /// True path.
     pub truth: StraightLine,
     /// INS error model.
-    pub ins: ConstantBiasIns,
+    pub ins: InsModel,
     /// Where the INS (and the filter's prior) believes the flight starts.
     pub ins_start: Vec2,
     /// Time step (s), equal to the magnetometer sample interval.
@@ -83,10 +84,14 @@ pub enum SimError {
     Filter(#[from] FilterError),
 }
 
+/// Mixed into the seed of the INS error stream so it is independent of the sensor noise.
+const INS_STREAM: u64 = 0x9E37_79B9_7F4A_7C15;
+
 /// Simulates `scenario` over `map` with `sensor`, running a filter configured by `config`.
 ///
 /// The same `map` both generates measurements and is used by the filter, i.e. the map is
-/// perfect. Map error is studied in Phase 2. `sensor_seed` drives the sensor noise only.
+/// perfect. Map error is studied in Phase 2. `sensor_seed` drives the sensor noise and, through
+/// a separate stream, the INS errors.
 pub fn run_scenario<M, S>(
     map: &M,
     sensor: &S,
@@ -99,12 +104,19 @@ where
     S: Magnetometer,
 {
     let mut sensor_rng = Xoshiro256PlusPlus::seed_from_u64(sensor_seed);
+    let mut ins_rng = Xoshiro256PlusPlus::seed_from_u64(sensor_seed ^ INS_STREAM);
     let mut filter = ParticleFilter::new(config.clone(), scenario.ins_start);
-    let ins_velocity = scenario.ins.reported_velocity(scenario.truth.velocity);
+    let velocity_errors = scenario
+        .ins
+        .velocity_errors(scenario.dt, scenario.n_steps, &mut ins_rng);
+    let mut ins_position = scenario.ins_start;
 
     let mut records = Vec::with_capacity(scenario.n_steps);
-    for k in 1..=scenario.n_steps {
+    // `zip` pairs each step number with that step's INS velocity error.
+    for (k, &velocity_error) in (1..=scenario.n_steps).zip(&velocity_errors) {
         let t = k as f64 * scenario.dt;
+        let ins_velocity = scenario.truth.velocity + velocity_error;
+        ins_position += ins_velocity * scenario.dt;
         let truth = scenario.truth.position_at(t);
         let true_field = map
             .field_at(truth.x, truth.y)
@@ -116,9 +128,7 @@ where
         records.push(StepRecord {
             t,
             truth,
-            ins: scenario
-                .ins
-                .dead_reckon(scenario.ins_start, &scenario.truth, t),
+            ins: ins_position,
             estimate: summary.estimate,
             bias_estimate: summary.bias_estimate,
             cov: summary.cov,
