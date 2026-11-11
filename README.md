@@ -223,6 +223,7 @@ seconds, magnetic field in nanotesla (nT).
 ## Data and licences
 
 Map data is **not** committed. The BGS Great Britain Aeromagnetic Survey is fetched from the
-[BGS OGC API](https://ogcapi.bgs.ac.uk/collections/aeromag). The collection metadata states no
-licence; BGS were asked to confirm on 2026-11-10. Until then only code and summary statistics
-are committed. If it is the Open Government Licence: "Contains NERC materials ©NERC [year]".
+[BGS OGC API](https://ogcapi.bgs.ac.uk/collections/aeromag) by `scripts/fetch_bgs_aeromag.py`.
+BGS confirmed on 2026-11-11 that the collection may be used under the
+[Open Government Licence v3](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/).
+Contains British Geological Survey data © UKRI.

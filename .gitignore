@@ -1,5 +1,5 @@
 /target
-# Raw/derived map data is downloaded by script, never committed (licence still being confirmed).
+# Raw/derived map data is downloaded by script, never committed (OGL, but large and reproducible).
 /data
 *.npy
 *.csv

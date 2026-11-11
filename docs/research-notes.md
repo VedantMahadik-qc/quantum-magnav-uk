@@ -55,13 +55,15 @@ arithmetic from the cited figures; everything else is quoted from the linked sou
   only as WMS images in GeoIndex ([data.gov.uk](https://www.data.gov.uk/dataset/05fd168e-a5ab-4e32-acf0-20a5821b122f/map-based-index-geoindex-magnetic-anomalies1)).
   **I found no downloadable grid of values**, so we grid it ourselves (e.g. Python `verde`, one
   offline step).
-- **Licence: needs confirming.** The OGC API says "mostly Open Government Licence, please see
+- **Licence: OGL v3 (confirmed).** The OGC API says "mostly Open Government Licence, please see
   individual collections", and the aeromag collection doesn't state one. The older data.gov.uk
   record has restrictive NERC wording. Fatiando's Harmonica/Ensaio redistributes this dataset as
   **OGL v3** with attribution "Contains NERC materials ©NERC [year]"
   ([notebook](https://www.fatiando.org/harmonica/v0.2.0/_downloads/d637f9133e6357827833b3a71e40928b/britain_magnetic.ipynb)).
   Action: email BGS enquiries to confirm, and don't commit raw data to the repo in the meantime
-  (download script only). **Emailed enquiries@bgs.ac.uk on 2026-11-10; awaiting a reply.**
+  (download script only). Emailed enquiries@bgs.ac.uk on 2026-11-10. **BGS IPR replied on 2026-11-11
+  (ref BGS#EA26/288): the collection is part of the OGC API service and may be used under the OGL
+  with the attribution "Contains British Geological Survey data © UKRI".** This replaces the ©NERC wording above.
 - Quality caveats for the error budget:
   - 2 km line spacing at 305 m clearance means lines are ~6.5× the flight height apart
     **[derived]**, so short-wavelength anomalies between lines are undersampled. By contrast the

@@ -5,7 +5,9 @@
 """Download the BGS Great Britain Aeromagnetic Survey points as one CSV.
 
 Source: https://ogcapi.bgs.ac.uk/collections/aeromag (OGC API Features, no login).
-Output (gitignored, never committed while the licence is unconfirmed):
+Licence: Open Government Licence v3, confirmed by BGS IPR on 2026-11-11 (ref BGS#EA26/288).
+Attribution: "Contains British Geological Survey data © UKRI".
+Output (gitignored, fetched rather than committed):
 
     data/raw/bgs_aeromag.csv     all points, ordered by feature_id
     data/raw/manifest.json       URL, date, numberMatched, row count, sha256
@@ -114,7 +116,7 @@ def main() -> int:
         "rows": len(rows),
         "columns": header,
         "sha256": hashlib.sha256(out_csv.read_bytes()).hexdigest(),
-        "licence": "unconfirmed (see docs/research-notes.md); do not redistribute",
+        "licence": "OGL v3; attribution: Contains British Geological Survey data © UKRI",
     }
     (args.out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {out_csv} and manifest.json")
