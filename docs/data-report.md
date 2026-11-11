@@ -7,7 +7,10 @@ the raw points are fetched by script, not committed. Licence: OGL v3, "Contains 
 ## Survey areas and flight heights
 
 `mtc` = mean terrain clearance, `aod` = altitude above Ordnance Datum. `aod == ground_elev + mtc`
-for 99.92% of points.
+for 99.92% of points. The rest are
+449 points (survey HG64, Highlands, ground 695–909 m) recorded with
+`aod = 0`, although `ground_elev + mtc` is 1000–1214 m. The upward-continuation scripts
+set their `aod` to `ground_elev + mtc` (`bgs_common.repair_heights`).
 
 | survey | points | lines | median E, N (km) | flight height | clearance 5–95% (m) |
 |---|---|---|---|---|---|

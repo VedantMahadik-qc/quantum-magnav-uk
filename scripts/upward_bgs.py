@@ -33,8 +33,8 @@ import numpy as np
 import pandas as pd
 import verde as vd
 
-from bgs_common import ROOT, load_points
-from grid_bgs import Grid, make_grid, nearest_layer
+from bgs_common import ROOT, load_points, repair_heights
+from grid_bgs import Grid, make_grid
 from holdout_bgs import HOLDOUT_FRACTION, whole_line_key
 
 # Isle of Mull and surroundings: contains the demo flight line (E 144-204 km at N 730 km).
@@ -59,14 +59,17 @@ def fit(d: pd.DataFrame, values: np.ndarray | None = None) -> hm.EquivalentSourc
     return hm.EquivalentSourcesGB(**ES_PARAMS).fit(coords, v)
 
 
+def usable(d: pd.DataFrame, east: np.ndarray, north: np.ndarray, altitude: float) -> np.ndarray:
+    """Nodes within MASK_DISTANCE_M of data and >= MIN_CLEARANCE_M above the nearest point's ground."""
+    near = vd.distance_mask(xyz(d)[:2], maxdist=MASK_DISTANCE_M, coordinates=(east, north))
+    ground = nearest_layer_at(d, "ground_elev", east, north)
+    return near & (altitude >= ground + MIN_CLEARANCE_M)
+
+
 def altitude_mask(d: pd.DataFrame, region, altitude: float) -> tuple[tuple, np.ndarray]:
     """Grid nodes at `altitude` and a boolean mask of the usable ones."""
     east, north = vd.grid_coordinates(region, spacing=SPACING)
-    near = vd.distance_mask(xyz(d)[:2], maxdist=MASK_DISTANCE_M, coordinates=(east, north))
-    template = Grid(region[0], region[2], SPACING, np.where(near, 0.0, np.nan))
-    ground = nearest_layer(d, "ground_elev", template).values
-    ok = near & (altitude >= ground + MIN_CLEARANCE_M)
-    return (east, north, np.full_like(east, altitude)), ok
+    return (east, north, np.full_like(east, altitude)), usable(d, east, north, altitude)
 
 
 def synthetic_errors(d: pd.DataFrame, region, altitudes: list[float], min_depth: float,
@@ -104,8 +107,10 @@ def synthetic_errors(d: pd.DataFrame, region, altitudes: list[float], min_depth:
 def nearest_layer_at(d: pd.DataFrame, column: str, x, y) -> np.ndarray:
     from scipy.spatial import cKDTree
 
-    _, idx = cKDTree(np.column_stack([d.grid_east, d.grid_north])).query(np.column_stack([x, y]))
-    return d[column].to_numpy(float)[idx]
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    tree = cKDTree(np.column_stack([d.grid_east, d.grid_north]))
+    _, idx = tree.query(np.column_stack([x.ravel(), y.ravel()]))
+    return d[column].to_numpy(float)[idx].reshape(x.shape)
 
 
 def synthetic_check(d: pd.DataFrame, region, altitudes: list[float]) -> bool:
@@ -156,7 +161,7 @@ def main() -> None:
     args = parser.parse_args()
     region = tuple(args.region)
 
-    all_points = load_points()
+    all_points = repair_heights(load_points())
     all_lines = whole_line_key(all_points).unique()
     d = all_points[all_points.grid_east.between(region[0], region[1])
                    & all_points.grid_north.between(region[2], region[3])]

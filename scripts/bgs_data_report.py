@@ -86,6 +86,19 @@ def quick_look(d: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 
+def zero_aod_note(d: pd.DataFrame) -> str:
+    """Describe the points whose aod disagrees with ground_elev + mtc (all recorded as 0)."""
+    bad = d[d.aod != d.ground_elev + d.mtc]
+    zero = bad[bad.aod == 0]
+    true = zero.ground_elev + zero.mtc
+    others = "" if len(zero) == len(bad) else f" ({len(bad) - len(zero)} others disagree too)"
+    return (f"{len(zero)} points (survey {', '.join(sorted(zero.survey_area.unique()))}, "
+            f"Highlands, ground {zero.ground_elev.min():.0f}–{zero.ground_elev.max():.0f} m) "
+            f"recorded with\n`aod = 0`, although `ground_elev + mtc` is {true.min():.0f}–"
+            f"{true.max():.0f} m{others}. The upward-continuation scripts\n"
+            "set their `aod` to `ground_elev + mtc` (`bgs_common.repair_heights`).")
+
+
 def main() -> None:
     d = load_points()
     manifest = json.loads((ROOT / "data" / "raw" / "manifest.json").read_text())
@@ -102,7 +115,8 @@ the raw points are fetched by script, not committed. Licence: OGL v3, "Contains 
 ## Survey areas and flight heights
 
 `mtc` = mean terrain clearance, `aod` = altitude above Ordnance Datum. `aod == ground_elev + mtc`
-for {100 * (d.aod == d.ground_elev + d.mtc).mean():.2f}% of points.
+for {100 * (d.aod == d.ground_elev + d.mtc).mean():.2f}% of points. The rest are
+{zero_aod_note(d)}
 
 {md_table(survey_table(d))}
 
