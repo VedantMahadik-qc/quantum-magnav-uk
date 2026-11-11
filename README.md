@@ -146,19 +146,21 @@ The mixed-height survey is levelled and continued upward with equivalent sources
 | Flying at | MagNav final error |
 |---|---|
 | 305 m above ground (draped) | 5.8 m |
-| 1000 m above sea level | 16.5 m |
-| 2000 m above sea level | 74 m |
-| 4000 m above sea level | 310 m |
+| 1000 m above sea level | 17 m |
+| 2000 m above sea level | 56 m |
+| 4000 m above sea level | 327 m |
 
 The prediction that error grows with altitude at every step held. Altitude costs about 50×
-here, which matches the sharp drop in field gradient: 87 → 16 nT/km from 1 to 4 km.
+here, which matches the sharp drop in field gradient: 89 → 16 nT/km from 1 to 4 km.
+(These numbers use 80 km solver windows. The first run used 20 km windows, which had not
+converged: two random seeds disagreed by 12%. See the doc.)
 
 The method check failed in an informative way. Equivalent sources recover a known synthetic
 field to 2–3% when it is smooth or sampled without gaps. Sampled like the real survey, the
 error at 1000 m is 13%: the 2 km line spacing never measured the short wavelengths between
 lines. That is a hard limit of the 1960s data at low altitude, not of the processing.
 At survey level, equivalent sources still predict held-out lines better than the cubic grid
-(119 against 145 nT RMS).
+(117 against 145 nT RMS).
 
 ## Data findings
 

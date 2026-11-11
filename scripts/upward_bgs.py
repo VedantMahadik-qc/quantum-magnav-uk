@@ -42,9 +42,11 @@ MULL_BOX = (100e3, 250e3, 680e3, 780e3)
 SPACING = 250.0
 MASK_DISTANCE_M = 2_000.0
 MIN_CLEARANCE_M = 150.0
-ES_PARAMS = dict(depth=1000.0, damping=1.0, block_size=500.0, window_size=20e3, random_state=0)
+# window_size 80 km, not 20 km: with 20 km windows the gradient-boosted fit had not converged,
+# and two random_states differed by 12% RMS over Mull at every altitude (2.0% at 80 km).
+ES_PARAMS = dict(depth=1000.0, damping=1.0, block_size=500.0, window_size=80e3, random_state=0)
 SOURCE = ("BGS aeromag (1955-65), equivalent sources (harmonica EquivalentSourcesGB, depth "
-          "1000 m, damping 1, 500 m blocks) fitted at each point's observation height and "
+          "1000 m, damping 1, 500 m blocks, 80 km windows) fitted at each point's observation height and "
           "predicted at {alt:.0f} m above Ordnance Datum")
 
 
@@ -56,7 +58,12 @@ def fit(d: pd.DataFrame, values: np.ndarray | None = None) -> hm.EquivalentSourc
     """Fit equivalent sources to points `d` (default values: the anomaly column)."""
     values = d.mag_igrf90.to_numpy(float) if values is None else values
     coords, v = vd.BlockReduce("median", spacing=SPACING, drop_coords=False).filter(xyz(d), values)
-    return hm.EquivalentSourcesGB(**ES_PARAMS).fit(coords, v)
+    # verde refuses windows larger than the sources (500 m blocks, slightly inside the data);
+    # a single window spanning them is the exact fit.
+    extent = min(np.ptp(coords[0]), np.ptp(coords[1])) - 2 * ES_PARAMS["block_size"]
+    window = max(min(ES_PARAMS["window_size"], float(extent)), ES_PARAMS["block_size"])
+    params = {**ES_PARAMS, "window_size": window}
+    return hm.EquivalentSourcesGB(**params).fit(coords, v)
 
 
 def usable(d: pd.DataFrame, east: np.ndarray, north: np.ndarray, altitude: float) -> np.ndarray:
